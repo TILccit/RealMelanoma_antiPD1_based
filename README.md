@@ -31,7 +31,7 @@ To reproduce the analysis conducted in the paper, please follow these steps:
 4.	Ensure that the necessary R packages are installed and up to date. Refer to the SessionInfo.txt files within the respective "session_info" subfolders for the specific package versions used during each analysis.
 5.	Set the working directory within each R Markdown script to the root folder of this project. This ensures that the relative paths to the data files and other resources are correctly resolved. Make sure that the default directory of all the chunks is set to the one also used in the console (change via global options). For knitting the .RMD file, change the root directory in the knit setup chunk at the top of the document.
 6.	Execute the R Markdown scripts in the specified order, following the instructions and guidelines provided within each script.
-7.	The outputs, including tables and figures, will be generated and stored in the "outputs" folder. Refer to the generated outputs for the corresponding results mentioned in the paper.
+7.	The outputs, including tables, figures and models, will be generated and stored in the "output" folder. Refer to the generated outputs for the corresponding results mentioned in the paper.
 
 Please note that reproducing the analysis may require sufficient computational resources and dependencies. 
 
