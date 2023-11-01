@@ -1,7 +1,8 @@
-This repository contains the scripts used for the analysis of the research paper titled "Sustained improved survival of patients with metastatic melanoma after the introduction of anti-PD-1-based therapies". 
+This repository contains the scripts used for the analysis of the research paper titled "___Sustained improved survival of patients with metastatic melanoma after the introduction of anti-PD-1-based therapies___". 
 
 The purpose of this project is to provide the scripts that analyze the data, generate key tables, and produce some of the main and supplementary figures mentioned in the paper.
----
+
+- - - -
 
 ## **Folder Structure** ##
 
@@ -37,7 +38,7 @@ Please note that reproducing the analysis may require sufficient computational r
 It is recommended to review the documentation and understand the workflow before running the scripts.
 
 - - - -
-For any further inquiries or clarifications, please contact [Eva Ellebaek, M.D. Ph.D] at [eva.ellebaek.steensgaard@regionh.dk], or [Marco Donia, M.D., Ph.D] at [marco.donia@regionh.dk]
+For any further inquiries or clarifications, please contact **Eva Ellebaek, M.D. Ph.D** at _eva.ellebaek.steensgaard@regionh.dk_, or **Marco Donia, M.D., Ph.D** at _marco.donia@regionh.dk_.
 - - - -
 
 ## **Citation**  ##
