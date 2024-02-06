@@ -1,0 +1,1460 @@
+---
+title: "Sustained improved survival of patients with metastatic melanoma after the introduction of anti-PD-1-based therapies"
+subtitle: <center> Development of prognostic predictive model for 1-4 years overall survival, internal validation & calibration </center>
+author: "Aimilia Schina"
+date: '`r paste("First created on July 2022. Updated on ", format(Sys.Date(), "%d %B %Y"))`'
+output:
+  html_document:
+    css: style.css
+    code_folding: hide
+    #smooth_scroll: yes
+    fig_caption: yes
+    #highlight: textmate
+    #theme: cerulean
+    #theme: simplex
+    toc: yes
+    toc_float:
+      collapsed: true
+      smooth_scroll: true
+    toc_depth: 6
+    number_sections: true
+    #df_print: paged
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = 'D:/BIOINF/PROJECTS/2_ANALYSES/18_GIT_PAPERS/Long_term_antiPD1_based_prognostic_model')
+```
+
+
+```{r,warning=F, message=F}
+## Clear R-workspace
+rm(list=ls(all=TRUE))
+
+## Close all graphic devices
+graphics.off()
+#####################
+### Load packages ###
+#####################
+library(pacman)
+
+pacman::p_load(extrafont,DT, dplyr,data.table, tibble,Amelia,reshape2, ggplot2,hrbrthemes,ggpubr, RColorBrewer,survival,gtsummary,ggrepel,forcats,VIM,mice,pec,mosaic,stringr,plyr,rcompanion,rlang,tidytidbits, purrr, forestmodel,rms,riskRegression,magrittr,tidymodels,SurvMetrics,base.rms,dynpred,ezfun,psfmi,miceafter,formula.tools,tictoc,foreach,mitools,smcfcs,GGally,dcurves,patchwork, survminer,miceadds, str2str
+)
+extrafont::loadfonts(device="win")
+windowsFonts(sans="Palatino Linotype")
+loadfonts(device="win")
+loadfonts(device="postscript")
+
+```
+
+
+```{r,warning=F, message=F}
+###########################
+### Main analysis paths ###
+###########################
+
+scriptsPath <- paste0("scripts/")
+scriptsFunctionsPath <- paste0(scriptsPath,"functions/")
+projectDataPath <- paste0("data/")
+projectOutDataPath <- paste0("output/data_files/")
+figuresPath <- paste0("output/figures/")
+tablesPath <- paste0("output/tables/")
+modelsPath <- paste0("output/models/")
+sessionInfoPath <- paste0("session_info/")
+
+
+##################################
+### LOAD SOURCE FUNCTIONS FILE ###
+##################################
+source(paste0(scriptsFunctionsPath,"generic_helper_functions.R"))
+source(paste0(scriptsFunctionsPath,"transformed_pfsmi_functions.R"))
+source(paste0(scriptsFunctionsPath,"boot_mi_validation_functions.R"))
+source(paste0(scriptsFunctionsPath,"performance_measures_Cox_functions.R"))
+source(paste0(scriptsFunctionsPath,"visualization_functions.R"))
+source(paste0(scriptsFunctionsPath,"stdca.R"))
+
+#####################
+### File suffixes ###
+#####################
+Rdata.suffix <- ".RData"
+
+
+########################
+### Script variables ###
+########################
+run_clean <- FALSE
+myBoot = 1000
+
+```
+
+
+# Assessing performance in survival prediction model {.tabset .tabset-fade .tabset-pills}
+
+## Overall performance  & discrimination measures {.tabset .tabset-fade .tabset-pills}
+
+### Theory {.tabset .tabset-fade .tabset-pills}
+
+#### Overall performance
+
+Two overall performance measures are proposed for prediction models with a survival outcome:
+
++ Brier score: it is the mean squared difference between observed event indicators and predicted risks at a fixed time point (e.g. at 5 years), lower is better; Brier scores range between 0 and 1. A score of 0 represents perfect accuracy and a score of 1 represents perfect inaccuracy. If a participant predicted a 70% probability of dying within 72 hours, and the patient did in fact die within that timescale, then they would have a Brier score of (0.70-1)2 = 0.09
+  
++ Scaled Brier score, also known as Index of Prediction Accuracy (IPA): it improves interpretability by scaling the Brier Score. It is the decrease in Brier compared to a null model, expressed as a percentage, higher is better. We show how rescaling the Brier score produces a measure that combines discrimination and calibration in one value and improves interpretability by adjusting for a benchmark model. We have called this measure the index of prediction accuracy (IPA). The IPA permits a common interpretation across binary, time to event, and competing risk outcomes. IPA should be a prominent measure reported in studies of medical prediction model performance. However, IPA is only a measure of average performance and, by default, does not measure the utility of a medical decision. The value of IPA is obtained as 1−(model Brier score/null model Brier score), where the null model contains no predictors. for the time to event and competing risk settings, censoring needs to be accommodated, and as such, a time horizon must be chosen, and the null model needs to be estimated with the Kaplan-Meier (no competing risks) or the Aalen-Johansen method [11] (with competing risks). Furthermore, in the case of right-censored observations, the Brier score is estimated with the use of inverse probability of censored weighting estimation . After using this technique to calculate the model and null model Brier scores, the IPA measure is constructed as above. This yields an IPA measure for all 3 settings (binary, time to event, and competing risks) with common interpretation: 100% is a perfect model, ≤0 is a useless model, higher is better, and harmful models have IPA<0.
+
+#### Discrimination
+
+Discrimination is the ability to differentiate between subjects who have the outcome by a certain time point and subjects who do not.
+Concordance can be assessed over several different time intervals:
+
++ the entire range of the data. Two concordance measures are suggested:    
+
+  + Harrell's C quantifies the degree of concordance as the proportion of evaluable pairs where the patient with a longer survival time has better predicted survival;  
+  
+  + Uno's C uses a time dependent weighting that more fully adjusts for censoring;  
+  
++ a 3 year window corresponding to our target assessment point. Uno's cumulative/dynamic time-dependent Area Under the Curve (AUC) is suggested. Uno's time-dependent AUC summarizes discrimination at specific fixed time points. At any time point of interest, _t_, a patient is classified as having an event if the patient experienced the event between baseline and _t_ (5 years in our case study), and as a non-event if the patient remained event-free at _t_. The time-dependent AUC evaluates whether predicted probabilities were higher for cases than for non-cases.
+
+
+#### Strategy
+
+Internal validation using Bootstrapping with 10 nested multiple imputations (1000 bootstraps)
+Calibration using bootstrapping with a single multiple imputation (1000 bootstraps)
+
+
+## Calibration
+
+Calibration is the agreement between observed outcomes and predicted probabilities. For example, in survival models, a predicted survival probability at a fixed time horizon t of 80% is considered reliable if it can be expected that 80 out of 100 will survive among patients who received a predicted survival probability of 80%. Calibration can be assessed at a fixed time point (e.g. at 5 years), and globally (considering the entire range of the data). In addition, different level of calibration assessment can be estimated according to the level of information available in the data. When individual data of development and validation set are available, full assessment of calibration is possible. Calibration at fixed time point is possible when baseline hazard at fixed time point and coefficient are available.
+
+Since different level of information may be available, different level of calibration can be estimated: mean, weak, and moderate calibration.
+
+We will use the moderate calibration (via rms package) with the compromise of using one imputation and then running bootstrapped calibration.
+
+  * Moderate calibration concerns whether among patients with the same predicted risk, the observed event rate equals the predicted risk. A smooth calibration curve of the observed event rates against the predicted risks is used for assessment of moderate calibration. The relation between the outcome at a fixed time point and predictions can be visualised by plotting the predicted risk from another ‘secondary’ Cox model against the predicted risk from the development model. Moderate calibration at fixed time point can be assessed using flexible calibration curve, complemented with ICI, E50, E90 as suggested by Austin et al.
+  
+  * Calibration curve: it is a graphical representation of calibration in-the-large and calibration. It shows:
+
+    + on the x-axis the predicted survival (or risk) probabilities at a fixed time horizon (e.g. at 5 years);
+
+    + on the y-axis the observed survival (or risk) probabilities at a fixed time horizon (e.g. at 5 years);
+
+    + The 45-degree line indicates the good overall calibration. Points below the 45-degree line indicates that the model overestimate the observed risk. If points are above the 45-degree line, the model underestimate the observed risk; The observed probabilities estimated by the Kaplan-Meier curves (in case of survival) or by the complementary of the Kaplan-Meier curves (in case of risk in absence of competing risks) are represented in terms of percentiles of the predicted survival (risk) probabilities.
+
+    + Integrated Calibration Index (ICI): it is the mean absolute difference between smoothed observed proportions and predicted probabilities;
+
+    + E50 and E90 denote the median, the 90th percentile of the absolute difference between observed and predicted probabilities of the outcome at time t;
+
+
+# Clinical utility
+
+Discrimination and calibration measures are essential to assess the prediction performance but insufficient to evaluate the potential clinical utility of a risk prediction model for decision making. When new markers are available, clinical utility assessment evaluates whether the extended model helps to improve decision making.  
+Clinical utility is measured by the net benefit that includes the number of true positives and the number of false positives. For example, in time-to-event models, the true positives reflect the benefit of being event free for a given time horizon using additional interventions such as additional treatments, personalized follow-up or additional surgeries. The false positives represent the harms of unnecessary interventions.   
+
+Generally, in medicine, clinicians accepts to treat a certain number of patients for which interventions are unnecessary to be event free for a given time horizon. So, false negatives (the harm of not being event free for a given time horizon) are more important than false positives (the harm of unnecessary interventions). Thus, net benefit is the number of true positives classifications minus the false positives classifications weighted by a factor related to the harm of not preventing the event versus unnecessary interventions. The weighting is derived from the threshold probability to death (one minus survival probability) using a defined time horizon (for example 5 years since diagnosis). For example, a threshold of 10% implies that additional interventions for 10 patients of whom one would have experience the event in 5 years if untreated is acceptable (thus treating 9 unnecessary patients). This strategy is compared with the strategies of treat all and treat none patients. If overtreatment is harmful, a higher threshold should be used.  
+
+The decision curve is calculated as follows:
+  
+1. Choose a time horizon (in this case 5 years);
+2. Specify a risk threshold which reflects the ratio between harms and benefit of an additional intervention;
+3. Calculate the number of true positive and false positive given the threshold specified in (2);
+4. Calculate the net benefit of the survival model;
+5. Plot net benefit on the *y-axis* against the risk threshold on the *x-axis*;
+6. Repeat steps 2-4 for each model consideration;
+7. Repeat steps 2-4 for the strategy of assuming all patients are treated;
+8. Draw a straight line parallel to the *x-axis* at y=0 representing the net benefit associated with the strategy of assuming that all patients are not treated.
+
+Given some thresholds, the model/strategy with higher net benefit represents the one that potentially improves clinical decision making. 
+
+Diagnostic and prognostic models are typically evaluated with measures of accuracy that do not address clinical consequences. Decision-analytic techniques allow assessment of clinical outcomes but often require collection of additional information may be cumbersome to apply to models that yield a continuous result. Decision curve analysis is a method for evaluating and comparing prediction models that incorporates clinical consequences, requires only the data set on which the models are tested. Decision curve analysis is a simple method for evaluating prediction models, diagnostic tests, and molecular markers.  In DCA prediction models are compared to two default strategies: 1) assume that all patients are test positive and therefore treat everyone, or 2) assume that all patients are test negative and offer treatment to no one. “Treatment” is considered in the widest possible sense, not only drugs, radiotherapy or surgery, but advice, further diagnostic procedures or more intensive monitoring. 
+
+# Data
+## Loading patient data
+
+Original dataframe is reduced to include only patients diagnosed in 2016 and 2018.
+
+```{r dataLoad,warning=F, message=F,eval=TRUE}
+# Loading data
+dataDF <- loadRData(paste0(projectOutDataPath,"realMel.DF.allCont",Rdata.suffix))
+dataDF.fix <-dataDF
+colnames(dataDF.fix) <- str_replace_all(str_replace_all(colnames(dataDF.fix)," ","_"),"-","_")
+
+dataDF.f <- dataDF.fix %>% dplyr::select(-eligible) %>% dplyr::filter(Year_of_diagnosis %in% c(2016,2018)) %>% droplevels()
+levels(dataDF.f$Gender) <- c("Male","Female")
+
+
+```
+
+## Preprocessing
+
+We remove treatments of no interest.
+```{r ,warning=F, message=F,eval=TRUE}
+
+treats=c("Anti-PD-1","Anti-PD-1 plus Anti-CTLA-4","BRAFi", "No treatment")
+
+
+colnames(dataDF.f)[11] <- "LDH"
+colnames(dataDF.f)[18] <- "LDH_level"
+dataDF.f <- dataDF.f %>% relocate(LDH, .after = LDH_level) %>% droplevels()
+dataDF.f <- dataDF.f %>% dplyr::filter(First_line_treatments %in% treats) %>% droplevels()
+
+
+
+```
+
+
+We will use the multiply imputed data (1000 imputations) (pooled in the sense that they are complete) for initial descriptive statistics, model diagnostics, interactions etc.
+
+Then we will use the imputed bootstrapped data for predicting survival times.
+
+Age and LDH will be kept as continuous variables, and explore possible transformations suitable.
+
+Data include patients that received:
+
+* no treatment
+* anti-PD-1
+* anti-PD-1 plus anti-CTLA-4
+* BRAF inhibitors
+
+
+```{r ,warning=F, message=F,eval=TRUE}
+data.all <- dataDF.f
+
+```
+
+## Features Survival,age & LDH continuous
+
+```{r,warning=F, message=F,eval=TRUE}
+## Define which columns include survival data
+OS_time <- c("Months_to_death_or_last_seen")
+OS_status <- c("Dead_or_alive")
+# PFS_time <- c("PFS FU MONTHS")
+# PFS_status <- c("PROGRESSED")
+## DEFINE IF YOU ARE DOING OS OR PFS
+surv_time <-OS_time
+surv_status <-OS_status
+surv_time_label <- "OS"
+# Set prediction horizons
+myHorizons = c(6,12,24,36,48)
+
+```
+
+Combine brain metastases with disease stage to one covariate.
+
+```{r,warning=F, message=F,eval=TRUE}
+data.all$Stage_Brain_mets <- paste(data.all$Disease_stage,"_",data.all$Brain_metastases) %>% str_remove_all(" ")
+# Create combined variable for Brain mets and disease stage (strata also for treatment)
+
+data.all$Stage_Brain_mets <- ifelse(data.all$Stage_Brain_mets=="M1c/M1d_yes", 
+                                                                              "M1c/M1d with BM",
+                                             ifelse(data.all$Stage_Brain_mets=="M1c/M1d_no",
+                                                    "M1c/M1d no BM",
+                                                    ifelse(data.all$Stage_Brain_mets=="III/M1a/M1b_no",
+                                                           "III/M1a/M1b",data.all$Stage_Brain_mets)))
+data.all$Stage_Brain_mets <- factor(data.all$Stage_Brain_mets,
+                                             levels=c("M1c/M1d with BM","M1c/M1d no BM","III/M1a/M1b"))
+
+data.all$STAGE <- as.factor(data.all$STAGE)
+```
+
+
+```{r,warning=F, message=F,eval=TRUE}
+# Brain mets full
+featuresIn.cn <-c("Gender","Age_at_1st_Treatment","BRAF status",
+              "Stage_Brain_mets","LDH_level","Performance status","Steroids","Comorbidities","Autoimmunity","Other malignancies","First_line_treatments")
+featuresIn.cn <- str_replace_all(str_replace_all(featuresIn.cn," ","_"),"-","_")
+featuresInLabels.cn <- c("Gender","Age","BRAF status",
+              "Disease stage and Brain metastases","LDH level","Performance status","Steroids","Comorbidities","Autoimmunity","Other malignancies","First line Treatment")
+
+numeric_feats<- c("Age_at_1st_Treatment","LDH_level")
+categ_feats <- setdiff(featuresIn.cn,numeric_feats)
+```
+
+```{r ,warning=F, message=F,eval=TRUE}
+
+tbl_orig <-data.all %>% dplyr::select(-Months_to_death_or_last_seen, -Dead_or_alive,-First_line_treatments,-Brain_metastases, -Disease_stage,-STAGE) %>% setNames(c("Year of diagnosis","Gender","Age at 1st Treatment","Age categories","BRAF status","Performance status", "Steroids","Comorbidities","Autoimmunity","Other malignancies", "LDH level", "LDH",
+               "Stage_Brain_mets")) %>%
+# select(age, trt) %>%
+  tbl_summary(
+    # by = trt,
+    type = all_continuous() ~ "continuous2",
+    statistic = list(all_continuous() ~ c("{N_nonmiss}",
+                                     "{median} ({p25}, {p75})", 
+                                     "{min}, {max}"),
+                      all_categorical() ~ "{n} ({p}%)"),
+    missing = "ifany",missing_text="Missing"
+  ) #%>% add_p(pvalue_fun = ~style_pvalue(.x, digits = 2))
+
+
+tbl_orig
+```
+
+
+
+## Final data and features combinations
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=14, fig.height=8}
+
+# Fix original data column to not have issue when extracting knots
+colnames(data.all)[5]<- "Age_first_Treatment"
+```
+
+
+# Method boot_MI  {.tabset .tabset-fade .tabset-pills}
+
+Method boot_MI including BW (backward) selection.
+
+interval validation is done of the last model that is selected by the transformed function psfmi_validate function including BW selection by setting p.crit=0.05, and pooling is then done of the full model. BW selection is then applied in each bootstrap sample from the full model of pool_lr. In this way, shrinkage of models can be performed including backward selection of variables. In this way a fair shrinkage factor can be determined because variable selection is responsible for a large amount of overfitting in coefficients.
+
+The method follows the internal validation procedure of the validate function in the rms package for complete data but now within the context of multiply imputed data. With the method boot_MI, first bootstrap samples are drawn from the original incomplete dataset and than multiple imputation is applied in each of these incomplete bootstrap samples. The pooled model is analyzed in each bootstrap sample (training data) and subsequently tested in the original multiply imputed data to determine the amount of optimism. The method can be performed in combination with backward or forward selection.
+
+Pooling with Rubin's Rules and check supplementary methods in the paper.
+
+
+## Features in formula
+
+```{r, warning=FALSE, echo=TRUE, eval=TRUE}
+######################
+# ORIGINAL FEATURES
+featuresIn.cn.orig <-c("Gender","Age_first_Treatment",
+              "Stage_Brain_mets","Steroids","Comorbidities","Autoimmunity","Other malignancies","Performance status","BRAF status","LDH_level","First_line_treatments")
+featuresIn.cn.orig <- str_replace_all(str_replace_all(featuresIn.cn.orig," ","_"),"-","_")
+featuresInLabels.cn.orig <- c("Gender","Age",
+              "Disease stage and Brain metastases","Steroids","Comorbidities","Autoimmunity","Other malignancies","Performance status","BRAF status","LDH level","First line Treatment")
+
+numeric_feats.orig<- c("Age_first_Treatment","LDH_level")
+categ_feats.orig <- setdiff(featuresIn.cn.orig,numeric_feats.orig)
+
+# FINAL FEATURES FOR MI/MODELLING
+featuresIn.cn <-c("Gender","Age_first_Treatment",
+              "Stage_Brain_mets","Steroids","Comorbidities","Autoimmunity","Other malignancies","Performance status","BRAF status","LDH_level.log","First_line_treatments")
+featuresIn.cn <- str_replace_all(str_replace_all(featuresIn.cn," ","_"),"-","_")
+
+numeric_feats<- c("Age_first_Treatment","LDH_level.log")
+categ_feats <- setdiff(featuresIn.cn,numeric_feats)
+# When I manually add rcs of age for MI with smcfcs
+numeric_feats.ext <- c(numeric_feats[1],"Age_first_Treatment_1",numeric_feats[2])
+```
+
+
+## Different Formulas for models and MI {.tabset .tabset-fade .tabset-pills}
+
+
+### MICE
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=14, fig.height=8}
+
+
+# All vars, transformation of LDH logged, age rcs- TREATMENT IS STRATA
+feats.trans.strata <-makeComplexFormula(features=c(categ_feats[-c(9)],numeric_feats.ext[3]), 
+                   rcsFeats=c(numeric_feats.ext[1]), 
+                   knots=c(3), 
+                   interactions=NULL,
+                   strataFeats=c(categ_feats[9]))
+
+strataVars <- c(categ_feats[9])
+```
+
+
+## MI-predictor matrix {.tabset .tabset-fade .tabset-pills}
+
+Transformed continuous variables were incorporated in the multiple imputation algorithm.
+
+**STRATEGY**
+
+1. Transform variables
+2. quickpred() to get predictor matrix
+3. Make sure that either original variable or transformed as predictors but not both at the same time, to avoid collinearity
+3. Do imputations
+
+```{r, warning=FALSE, echo=TRUE, eval=TRUE}
+# First define  transformations in original data
+data.original <- data.all %>% dplyr::select(all_of(c(surv_time, surv_status,featuresIn.cn.orig))) %>% droplevels()
+# Create LDH log
+data.original.ext <- cbind(data.original, LDH_level.log=log(data.original$LDH_level))
+
+# Create complete data-extended version
+data.complete <- data.original.ext %>% dplyr::filter(complete.cases(.)) %>% droplevels()
+dim(data.complete)
+```
+
+## Median follow-up time
+
+Calculate median follow-up, using the more robust  reverse Kaplan-Meier (KM) estimator .
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=14, fig.height=8}
+quantile(prodlim(Surv(time=Months_to_death_or_last_seen,event=Dead_or_alive)~1, data=data.original.ext, reverse = T))
+```
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=14, fig.height=8}
+quantile(prodlim(Surv(time=Months_to_death_or_last_seen,event=Dead_or_alive)~1, data=data.original.ext %>% dplyr::filter(Dead_or_alive==0) %>% droplevels(), reverse = T))
+```
+
+### mice - all transformations, no interactions, no Nelson-Aalen estimate of the cumulative hazard
+
+```{r, warning=FALSE, echo=TRUE, eval=TRUE}
+
+# Create restricted cubic splines for age
+rcs_age <- rcspline.eval(data.original.ext$Age_first_Treatment, inclx=TRUE, nk=3)%>% as.data.frame()#rcs(data.original$Age_first_Treatment,3) %>% as.data.frame()
+colnames(rcs_age) <- c("Age_first_Treatment", "Age_first_Treatment_1")
+data.original.ext_rcs <- data.original.ext %>%add_column("Age_first_Treatment_1"=rcs_age$Age_first_Treatment_1,.after = "Age_first_Treatment" )
+
+
+## Automatic calculation of predictor matrix
+predMat.alltrans <- quickpred(data.original.ext_rcs)
+# Dry run of MI
+ini <- mice(data.original.ext_rcs, pred=predMat.alltrans, max=0, print=FALSE)
+meth.alltrans <- ini$meth
+## LOG TRANSFORMATION OF LDH
+meth.alltrans["LDH_level.log"] <- "~log(LDH_level)"
+pred.alltrans <- ini$pred
+# We do not want to predict LDH_level from log(LDH_level), so set to zero
+pred.alltrans["LDH_level", "LDH_level.log"] <- 0
+pred.alltrans[c("Performance_status","BRAF_status"),"LDH_level.log"] <- 0
+## RCS TRANSFORMATION FOR AGE - age has no missing, but other vars depend on age
+# as I can see imputation of ldh, ps, braf status depends from both age and age' (rcs(age,3))
+# In case we wanted to predict another missing variable from log LDH we should set
+# in the predictor matrix to 0 for predicting from original LDH
+# pred[c("Performance_status","BRAF_status","LDH_level"),"Age_first_Treatment"]
+######
+# Perform multiple imputation
+orig.imp.alltrans <- mice(data.original.ext_rcs,m=10, seed=3456, predictorMatrix=as.matrix(pred.alltrans),
+                  meth=meth.alltrans, print=FALSE)
+orig.imp.list.alltrans <- miceadds::datlist2Amelia(datlist=orig.imp.alltrans)
+orig.imp.list.alltrans <- orig.imp.list.alltrans$imputations
+
+orig.imp.final.alltrans<- orig.imp.list.alltrans %>% ldply(.id = "Impnr")
+orig.imp.final.alltrans$Impnr <- as.character(orig.imp.final.alltrans$Impnr)
+orig.imp.final.alltrans$Impnr <- str_replace(orig.imp.final.alltrans$Impnr,"imp","")
+orig.imp.final.alltrans$Impnr <- as.numeric(orig.imp.final.alltrans$Impnr)
+
+```
+
+### mice - all transformations, no interactions, include Nelson-Aalen estimate of the cumulative hazard
+
+Include the Nelson-Aalen estimate of the cumulative hazard and event indicator in imputation process
+
+White et al. [2011, Section 5] recommend using covariates and the outcome from the analysis models, as well as predictors of the incomplete variable. Further, White and Royston [2009] recommend using the
+• the Nelson-Aalen estimate of the cumulative hazard (computed using nelsonaalen()), and
+• the event indicator (for example, died as a 0/1 variable).
+
+
+```{r, warning=FALSE, echo=TRUE, eval=TRUE}
+# New data
+data.original.ext.cox <- data.original.ext_rcs
+data.original.ext.cox$Months_to_death_or_last_seen <- round(data.original.ext.cox$Months_to_death_or_last_seen,8) # rounding here, to not have issues, helps with having no nas when calculating the cumulative hazard
+data.original.ext.cox$nelsonaalen <- nelsonaalen(data.original.ext.cox, Months_to_death_or_last_seen, Dead_or_alive)
+which(is.na(data.original.ext.cox$nelsonaalen))
+
+
+## Automatic calculation of predictor matrix
+predMat.cox <- quickpred(data.original.ext.cox)
+# Dry run of MI
+ini <- mice(data.original.ext.cox, pred=predMat.cox, max=0, print=FALSE)
+meth.cox <- ini$meth
+## LOG TRANSFORMATION OF LDH
+meth.cox["LDH_level.log"] <- "~log(LDH_level)"
+pred.cox <- ini$pred
+# We do not want to predict LDH_level from log(LDH_level), so set to zero
+pred.cox["LDH_level", "LDH_level.log"] <- 0
+# We predict PS, BRAF from LDH not log LDH
+pred.cox[c("Performance_status","BRAF_status"),"LDH_level.log"] <- 0
+# Use nelson allen (and NOT TIME), event indicator in imputation
+# we do no want to predict missing vars from time variable rather from nelson aalen
+pred.cox[c("Performance_status","BRAF_status","LDH_level", "LDH_level.log"),"Months_to_death_or_last_seen"] <- 0
+# Do I want to force imputation to be based on nelson aalen and event? YES
+pred.cox[c("Performance_status","BRAF_status","LDH_level", "LDH_level.log"),"nelsonaalen"]# all are already based
+pred.cox[c("Performance_status","BRAF_status","LDH_level", "LDH_level.log"),"Dead_or_alive"] <- 1
+
+######
+# Perform multiple imputation
+orig.imp.cox <- mice(data.original.ext.cox,m=10, seed=3456, predictorMatrix=as.matrix(pred.cox),
+                  meth=meth.cox, print=FALSE)
+orig.imp.list.cox <- miceadds::datlist2Amelia(datlist=orig.imp.cox)
+orig.imp.list.cox <- orig.imp.list.cox$imputations
+
+orig.imp.final.cox<- orig.imp.list.cox %>% ldply(.id = "Impnr")
+orig.imp.final.cox$Impnr <- as.character(orig.imp.final.cox$Impnr)
+orig.imp.final.cox$Impnr <- str_replace(orig.imp.final.cox$Impnr,"imp","")
+orig.imp.final.cox$Impnr <- as.numeric(orig.imp.final.cox$Impnr)
+
+
+# Create single imputation
+orig.imp.cox.s <- mice(data.original.ext.cox,m=1, seed=3456, predictorMatrix=as.matrix(pred.cox),
+                  meth=meth.cox, print=FALSE)
+orig.imp.list.cox.s <- complete(data=orig.imp.cox.s,action=1)
+```
+
+# Model development : Internal validation & calibratioon with Boot-MI{.tabset .tabset-fade .tabset-pills}
+
+Model development using strata for treatments, age and ldh transformed accordingly.
+
+Strategy: bootstrapping with nested multiple imputations. Backward selection (BW) for getting a simpler, parsimonious model.
+
+## Pooled models
+```{r poolingNoInter, warning=FALSE, echo=TRUE, eval=TRUE}
+# log lgh and rcs age trans, and cox
+pool_coxr.cox.nointer <- psfmi_coxr.Fixed(data=orig.imp.final.cox, nimp=10, impvar="Impnr",
+                formula = modelFormula(surv_time, surv_status, feats.trans.strata ), p.crit=1,
+                method="D1", direction = "BW",
+                strata.predictors=strataVars)
+
+
+
+## Pool model with BW for variable selection, to have FINAL PARSIMONIOUS MODEL
+pool_coxr.cox.nointer.bw <- psfmi_coxr.Fixed(data=orig.imp.final.cox, nimp=10, impvar="Impnr",
+                formula = modelFormula(surv_time, surv_status, feats.trans.strata ), p.crit=.05,
+                method="D1", direction = "BW",
+                strata.predictors=strataVars)
+
+```
+
+For BW, we need to also run a pooling using variable selection. We are using p critical value greater than 0.05 , the usual level, so that it is not too difficult to enter predictors into the model.
+
+## Stability analysis
+
+Evaluation of Model Stability in multiply imputed datasets. The stability of models selected and the bootstrap inclusion frequency can be evaluated.
+
+It uses the original MI datasets (coming from original data with missing), which are stacked.
+
+Then bootstraps using the imputation number as strata -stratifies bootstrap samples. The stratification factor is the variable that separates the imputed datasets. The same bootstrap cases are drawn in each bootstrap sample.
+
+For each bootstrap, it calculates the pooled model (with var selection if defined) over the MI datasets, and extracts final predictors after var selection.
+
+
+## No BW: complete model
+
+```{r bootMInointer, warning=FALSE, echo=TRUE, eval=TRUE}
+if(isTRUE(run_clean)){
+  ### MICE
+  tic()
+  set.seed(100)
+  
+  resCox_MI_boot.cox.nointer <- psfmi_validate.cox(pobj = pool_coxr.cox.nointer,
+    val_method = "boot_MI",
+    data_orig = data.original.ext.cox,
+    int_val = TRUE,
+    nboot = myBoot,
+    folds=NULL ,
+    nimp_cv = NULL,
+    nimp_mice = 10 ,
+    p.crit = 1,
+    BW = FALSE,
+    direction = NULL,
+    cv_naive_appt=FALSE,
+    cal.plot=FALSE,
+    plot.method="mean" ,
+    groups_cal=5,
+    miceImp = collectPooledMice,
+    predictorMatrix =pred.cox,
+    seed=3456,
+    horizon=myHorizons,
+    modelName="simple",
+    miceMethod=meth.cox)
+  toc()
+
+
+  resCox_MI_boot.strata.nointer <- list(mice=resCox_MI_boot.cox.nointer)
+  
+  save(resCox_MI_boot.strata.nointer, file=paste0(modelsPath,"resCox_MI_boot.strata.nointer" ,"_RED",Rdata.suffix))
+}else{
+  resCox_MI_boot.strata.nointer <- loadRData(paste0(modelsPath,"resCox_MI_boot.strata.nointer" ,"_RED",Rdata.suffix))
+}
+
+```
+
+
+## With BW: parsimonious model {.tabset .tabset-fade .tabset-pills}
+
+
+```{r bootMInointerBW, warning=FALSE, echo=TRUE, eval=TRUE}
+if(isTRUE(run_clean)){
+  ### MICE
+  tic()
+  set.seed(100)
+  
+  resCox_MI_boot.cox.nointer.bw <- psfmi_validate.cox(pobj = pool_coxr.cox.nointer,
+    val_method = "boot_MI",
+    data_orig = data.original.ext.cox,
+    int_val = TRUE,
+    nboot = myBoot,
+    folds=NULL ,
+    nimp_cv = NULL,
+    nimp_mice = 10 ,
+    p.crit = .05,
+    BW = FALSE,
+    direction = "BW",
+    cv_naive_appt=FALSE,
+    cal.plot=FALSE,
+    plot.method="mean" ,
+    groups_cal=5,
+    miceImp = collectPooledMice,
+    predictorMatrix =pred.cox,
+    seed=3456,
+    horizon=myHorizons,
+    modelName="simple",
+    miceMethod=meth.cox)
+  toc()
+
+
+  resCox_MI_boot.strata.nointer.bw <- list(mice.bw=resCox_MI_boot.cox.nointer.bw)
+  save(resCox_MI_boot.strata.nointer.bw, file=paste0(modelsPath,"resCox_MI_boot.strata.nointer.bw" ,"_RED",Rdata.suffix))
+}else{
+  resCox_MI_boot.strata.nointer.bw <- loadRData(paste0(modelsPath,"resCox_MI_boot.strata.nointer.bw" ,"_RED",Rdata.suffix))
+}
+
+
+```
+
+### Stability analysis
+
+Here we can look at BIF of model variables and which were the most frequent models in the bootstraps
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=6, fig.height=6}
+
+bif.df<- melt(resCox_MI_boot.strata.nointer.bw$mice.bw$stability$bif_perc) %>% rownames_to_column(var="variable")
+bif.df$variable <- factor(bif.df$variable, levels = bif.df$variable %>% rev())
+
+
+mybarplot(bif.df,xVar="variable",yVar="value",xLabel="Feature",yLabel="Bootstrap Inclusion Frequency in % (BIF)",facetVar=NULL,bootFreq=50)
+```
+
+Tileplot with the most stable models during validation
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=20, fig.height=8}
+# Models during validation with BW
+validation_stabModels <-resCox_MI_boot.strata.nointer.bw$mice.bw$stability$model_stab %>%
+  dplyr::select(-freq)
+
+validation_stabModels$model <- paste0("M",1:nrow(validation_stabModels))
+
+validation_stabModels.DF <-validation_stabModels %>% pivot_longer(-c(bif_pat_perc,model),names_to = "predictor",values_to = "value")
+
+validation_stabModels.DF$predictor <- factor(validation_stabModels.DF$predictor,
+                                             levels=validation_stabModels.DF$predictor %>% unique() )
+
+validation_stabModels.DF$model <- factor(validation_stabModels.DF$model, levels=validation_stabModels.DF$model %>% unique() %>% rev())
+validation_stabModels.DF$value <- validation_stabModels.DF$value %>% factor()
+
+valid_plot <-myTileHeatPlot.2(DF=validation_stabModels.DF, xVar="predictor", yVar="model",xLabel="", yLabel="", labelVar=NULL, colorVar="value", facetVar = NULL )
+
+## FINAL MODEL
+# Final model with BW
+final_model.DF <- pool_coxr.cox.nointer.bw$predictors_out %>% tail(n=1) %>% melt %>% dplyr::select(-Var1) %>% setNames(c("predictor","value")) %>% mutate(model="Final model")
+
+# Change 0 to 1 and 1 to zero, to have as 1 those included
+final_model.DF$value <- ifelse(final_model.DF$value==0,1,0)
+
+final_model.DF$predictor <- factor(final_model.DF$predictor,
+                                             levels=final_model.DF$predictor %>% unique() )
+
+final_model.DF$model <- factor(final_model.DF$model, levels=final_model.DF$model %>% unique() %>% rev())
+final_model.DF$value <- final_model.DF$value %>% factor()
+
+
+final_plot <-myTileHeatPlot.2(DF=final_model.DF, xVar="predictor", yVar="model",xLabel="", yLabel="", labelVar=NULL, colorVar="value", facetVar = NULL )
+
+final_plot/(valid_plot + theme(axis.text.x=element_blank())) + patchwork::plot_layout(heights = c(1, 9))
+# final_plot
+# valid_plot
+```
+
+Validation models BIF:
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=20, fig.height=8}
+# validation_stabModels.DF
+valid_BIF_plot <-myTileHeatPlot.2(DF=validation_stabModels.DF %>% dplyr::select(-predictor,-value) %>% melt(), 
+                 xVar="variable", 
+                 yVar="model",
+                 xLabel="", 
+                 yLabel="", 
+                 labelVar=NULL, 
+                 colorVar="value",
+                 colorCont = T, 
+                 facetVar = NULL )
+
+validPlots_merged <-(valid_plot | (valid_BIF_plot+ theme(axis.text.y=element_blank()))) + patchwork::plot_layout(widths = c(9,1))
+# validPlots_merged
+
+
+validPlots_merged2 <-((valid_plot+ theme(axis.text.x=element_blank())) | (valid_BIF_plot+ theme(axis.text.y=element_blank()))) + patchwork::plot_layout(widths = c(9,1))
+```
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=20, fig.height=8}
+final_plot2 <- (final_plot + patchwork::plot_spacer())+ patchwork::plot_layout(widths = c(8.9,1.1))
+
+(final_plot2)/(validPlots_merged2) + patchwork::plot_layout(heights = c(1, 9))
+```
+
+## Performance plots
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=6, fig.height=6}
+
+if(!isTRUE(run_clean)){
+  resCox_MI_boot.strata.nointer <-loadRData(paste0(modelsPath,"resCox_MI_boot.strata.nointer" ,"_RED",Rdata.suffix))
+  
+  resCox_MI_boot.strata.nointer.bw <-loadRData(paste0(modelsPath,"resCox_MI_boot.strata.nointer.bw" ,"_RED",Rdata.suffix))
+}
+
+resCox_MI_boot.strata.nointer.all <- c(resCox_MI_boot.strata.nointer,
+                                       resCox_MI_boot.strata.nointer.bw )
+
+
+bootMI.scores<-sapply(1:length(resCox_MI_boot.strata.nointer.all), function(x) postProcessing_scores(resCox_MI_boot.strata.nointer.all[[x]],modelName=names(resCox_MI_boot.strata.nointer.all)[x]), simplify=FALSE)
+
+bootMI.scores.merged <- ldply(bootMI.scores)
+
+plotMeasures_byTimeBoot(bootMI.scores.merged, horizons=myHorizons,metric="brier",timesLabel="Months",palleteName="main",filterModels=NULL,scale=FALSE)
+
+plotMeasures_byTimeBoot(bootMI.scores.merged, horizons=myHorizons,metric="ipa",timesLabel="Months",palleteName="main",filterModels=NULL,scale=FALSE)
+
+plotMeasures_byTimeBoot(bootMI.scores.merged, horizons=myHorizons,metric="auc",timesLabel="Months",palleteName="main",filterModels=NULL,scale=FALSE)
+
+plotMeasures_byTimeBoot(bootMI.scores.merged, horizons=myHorizons,metric="c",timesLabel="Months",palleteName="main",filterModels=NULL,scale=FALSE)
+
+```
+
+
+## Original complete data: internal validation using bootstrapping
+
+I want to run internal validation using the complete original data (bootstrapping) and also extract the pooled model coefficients across bootstraps, to compare performance metrics witht the MI data.
+
+```{r completeNointer, warning=FALSE, echo=TRUE, eval=TRUE}
+#feats.trans.strata
+#data.complete
+
+if(isTRUE(run_clean)){
+  resCox_boot.cox.nointer.complete <- boot_internal_validation(modelNames=c("simple"),
+                                                   time =surv_time, 
+                                                   status = surv_status,
+                                                   features = str_replace_all(feats.trans.strata,"strata","strat"),
+                                    data=data.complete, horizon=myHorizons,nBoot = myBoot,seed=100)
+
+  save(resCox_boot.cox.nointer.complete, file=paste0(modelsPath,"resCox_boot.cox.nointer.complete" ,"_RED",Rdata.suffix))
+}else{
+  resCox_boot.cox.nointer.complete <- loadRData(paste0(modelsPath,"resCox_boot.cox.nointer.complete" ,"_RED",Rdata.suffix))
+}
+
+
+```
+
+
+## Performance plots: MI vs Complete
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=6, fig.height=6}
+if(!isTRUE(run_clean)){
+  resCox_boot.cox.nointer.complete <- loadRData(paste0(modelsPath,"resCox_boot.cox.nointer.complete" ,"_RED",Rdata.suffix))
+
+  resCox_MI_boot.strata.nointer <- loadRData(paste0(modelsPath,"resCox_MI_boot.strata.nointer" ,"_RED",Rdata.suffix))
+}
+
+
+
+resCox_MI_vs_complete.noiter <- c(list(MI_mice=resCox_MI_boot.strata.nointer$mice),
+                                      list(complete= resCox_boot.cox.nointer.complete))
+
+
+bootMI.scores<-sapply(1:length(resCox_MI_vs_complete.noiter), function(x) postProcessing_scores(resCox_MI_vs_complete.noiter[[x]],modelName=names(resCox_MI_vs_complete.noiter)[x]), simplify=FALSE)
+
+bootMI.scores.merged <- ldply(bootMI.scores)
+
+plotMeasures_byTimeBoot(bootMI.scores.merged, horizons=myHorizons,metric="brier",timesLabel="Months",palleteName="main",filterModels=NULL,scale=FALSE)
+
+plotMeasures_byTimeBoot(bootMI.scores.merged, horizons=myHorizons,metric="ipa",timesLabel="Months",palleteName="main",filterModels=NULL,scale=FALSE)
+
+plotMeasures_byTimeBoot(bootMI.scores.merged, horizons=myHorizons,metric="auc",timesLabel="Months",palleteName="main",filterModels=NULL,scale=FALSE)
+
+plotMeasures_byTimeBoot(bootMI.scores.merged, horizons=myHorizons,metric="c",timesLabel="Months",palleteName="main",filterModels=NULL,scale=FALSE)
+
+```
+
+## Final Model coefficients{.tabset .tabset-fade .tabset-pills}
+
+The design matrix (model data frame extracted from model) depends on the data that the model was built on, which later defines the future predictions. Since we cannot have a pooled model data frame from MI, we built a model based on a single imputation and add manually the pooled coeffiecients, lp, means and vars inside the model object. That way, the design amtrix/model frame will be more consistent.
+
+First find knots used for age restricted cubic splines, so they can be used for calculations of future predictions:
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=4, fig.height=4}
+
+rcsKnotAIC_Cox(DF=data.original.ext.cox , endopoint=OS_time, event=OS_status,
+                           predictor="Age_first_Treatment", nk=3,nBoots=myBoot)#%>% na.omit()
+
+#49.00 70.05 83.00
+#49.03 71.10 83.60 --this is with na.omit only for agecolumn not on whole DF.
+Knots <- rcspline.eval(data.original.ext.cox$Age_first_Treatment %>% na.omit(), knots.only = TRUE,nk=3,inclx=TRUE)
+Knots
+
+```
+
+### MI vs Complete
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=8, fig.height=9}
+feats.trans.strata.f <-makeComplexFormula(features=c(categ_feats[-c(9)],numeric_feats.ext[3]),
+                   rcsFeats=c(numeric_feats.ext[1]),
+                   knots=c(3),
+                   interactions=NULL,
+                   strataFeats=c(categ_feats[9]),
+                   knotsPos=list(Knots))
+
+fit.pooled<- getPooledFitObj(dataToFit=orig.imp.list.cox.s,
+                dataMI = orig.imp.list.cox,
+                time = surv_time,
+                status = surv_status,
+                features = feats.trans.strata,
+                pooledObj = pool_coxr.cox.nointer)
+
+fit.pooled.c<- getPooledFitObj(dataToFit=orig.imp.list.cox.s,
+                dataMI = orig.imp.list.cox,
+                time = surv_time, 
+                status = surv_status, 
+                features = feats.trans.strata.f, 
+                pooledObj = pool_coxr.cox.nointer)
+coef.data.MI <-get_ggcoefsData_pooled(fitObj=fit.pooled,
+                       pooledObj=pool_coxr.cox.nointer %>%
+            pluck("RR_model_final") %>%
+            magrittr::extract2(1),
+                       significance=.05)
+
+
+
+## COMPLETE DATA FINAL MODEL
+fit.strata.nointer.nobw.COMPL <- coxph(modelFormula(surv_time,surv_status,feats.trans.strata ), data = data.complete, x=T, y=T)
+
+fit.strata.nointer.nobw.COMPL2 <- cph(modelFormula(surv_time,surv_status,feats.trans.strata%>% str_replace_all("strata","strat") ) , data = data.complete, x=T, y=T,surv=T)
+
+coef.data.complete<- ggcoef_model(fit.strata.nointer.nobw.COMPL, 
+             exponentiate = TRUE,
+             add_reference_rows = FALSE,
+             colour = NULL, 
+             stripped_rows = FALSE, return_data = T)
+
+
+### COMPARE
+coefs.models <- list(
+  "MI pooled" = coef.data.MI,
+  "Complete" = coef.data.complete
+)
+
+coefs.list_MIvsComl <- compare_dataCoefs(coefs.models)
+
+coefs.plot <-ggcoef_plot(coefs.list_MIvsComl, 
+               dodged=T,
+               exponentiate = TRUE,
+               colour="model",
+               errorbar_coloured=T) + 
+              scale_colour_discrete(type=ggsci::pal_uchicago(palette = "default", alpha = 1)(3))
+
+
+coefs.plot
+```
+
+### MI BW
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=8, fig.height=9}
+
+## MISSING DATA POOLED FINAL MODEL
+fit.pooled.bw<- getPooledFitObj(dataToFit=orig.imp.list.cox.s,
+                dataMI = orig.imp.list.cox,
+                time = surv_time, 
+                status = surv_status, 
+                features = makeComplexFormula(features=pool_coxr.cox.nointer.bw$predictors_final, 
+                   rcsFeats=NULL, 
+                   knots=NULL, 
+                   interactions=NULL,
+                   strataFeats=NULL), 
+                pooledObj = pool_coxr.cox.nointer.bw)
+
+
+fit.pooled.bw.c<- getPooledFitObj(dataToFit=orig.imp.list.cox.s,
+                dataMI = orig.imp.list.cox,
+                time = surv_time, 
+                status = surv_status, 
+                features = makeComplexFormula(features=pool_coxr.cox.nointer.bw$predictors_final[1:6], 
+                   rcsFeats=c(numeric_feats.ext[1]), 
+                   knots=c(3), 
+                   interactions=NULL,
+                   strataFeats=c(categ_feats[9]),
+                   knotsPos=list(Knots)), 
+                pooledObj = pool_coxr.cox.nointer.bw)
+
+coef.data.MI.bw <-get_ggcoefsData_pooled(fitObj=fit.pooled.bw,
+                       pooledObj=pool_coxr.cox.nointer.bw %>%
+            pluck("RR_model_final") %>%
+            magrittr::extract2(1),
+                       significance=.05)
+
+
+
+coefs.plot.bw <-ggcoef_plot(coef.data.MI.bw, 
+               # dodged=T,
+               exponentiate = TRUE,
+               # colour="model",
+               errorbar_coloured=T)
+
+
+coefs.plot.bw
+
+
+### COMPARE
+coefs.models.MI <- list(
+  "MI pooled" = coef.data.MI,
+  "MI pooled BW" = coef.data.MI.bw
+)
+
+coefs.list_MI.BW <- compare_dataCoefs(coefs.models.MI)
+
+coefs.plot.MI.BW <-ggcoef_plot(coefs.list_MI.BW, 
+               dodged=T,
+               exponentiate = TRUE,
+               colour="model",
+               errorbar_coloured=T) + 
+              scale_colour_discrete(type=ggsci::pal_uchicago(palette = "default", alpha = 1)(3))
+
+
+coefs.plot.MI.BW
+
+
+
+```
+
+## Calibration Moderate - at fixed time point
+
+We have singly imputed data (with mice) and can use those to:
+
+* fit a cph() model , same formula as used in internal validation above
+* validate the model, using bootstrapping
+* calibrate the model, using bootstrapping
+
+
+Checking if horizons for validation and calibration are within follow-up time:
+
+```{r calibrationNoInter1,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=6, fig.height=7}
+# define the maximum follow-up time in your dataset
+maxFollowUpTime <- max(orig.imp.list.cox.s[[surv_time]])
+maxFollowUpTime
+# check if all timepoints in myHorizons are within the follow-up time
+all(myHorizons <= maxFollowUpTime)
+```
+
+Due to differences between packages methods (pfsmi transformed functions for internal validation and pooled model versus rms for calibration) we perform calibration using the final predictors from the pooled BW parsimonious model, instead of performing BW inside the calibration with fastbw from the rms package.
+
+```{r calibrationNoInter2,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=6, fig.height=7}
+feats.pooled.kept <-makeComplexFormula(features=pool_coxr.cox.nointer.bw$predictors_in$value,rcsFeats=NULL,
+knots=c(3),
+interactions=NULL,
+strataFeats=c(categ_feats[9]),
+knotsPos=NULL)
+
+```
+
+
+
+```{r calibrationNoInter3,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=6, fig.height=7}
+
+if(isTRUE(run_clean)){
+  
+  ### NO BW
+  ### MICE
+  res.cal.strat.nointer.nobw.mice <-sapply(myHorizons%>% setNames(myHorizons %>% as.character()), function(x) validation_calibration_rms(data=orig.imp.list.cox.s,
+  time=surv_time,
+  status=surv_status,
+  features=feats.trans.strata %>% as.character %>% str_replace_all("strata","strat"),
+  set_seed=2371,
+  nBoots=myBoot,
+  timePoint=x,
+  set.units="Month"), simplify=FALSE)
+  
+ 
+  ##### WITH BW
+  
+  ## Now do calibration using the final predictors from pooled BW, so dont do BW inside calibration
+  
+   res.cal.strat.nointer.bw.mice <- sapply(myHorizons%>% setNames(myHorizons %>% as.character()), function(x) validation_calibration_rms(data=orig.imp.list.cox.s,
+  time=surv_time,
+  status=surv_status,
+  features=feats.pooled.kept %>% as.character %>% str_replace_all("strata","strat"),
+  set_seed=2371,
+  nBoots=myBoot,
+  timePoint=x,
+  set.units="Month"), simplify=FALSE)# , BW=TRUE, rule="p", sls=1
+  
+ 
+  # COMPLETE
+  res.cal.strat.nointer.nobw.COMPL <-  sapply(myHorizons%>% setNames(myHorizons %>% as.character()), function(x) validation_calibration_rms(data=data.complete,
+  time=surv_time,
+  status=surv_status,
+  features=feats.trans.strata %>% as.character %>% str_replace_all("strata","strat"),
+  set_seed=2371,
+  nBoots=myBoot,
+  timePoint=x,
+  set.units="Month"), simplify=FALSE)
+  
+  
+  res.cal.strat.nointer <- list(mice=res.cal.strat.nointer.nobw.mice,
+                                    # smcfcs=res.cal.strat.nointer.nobw.smc,
+                                    mice.bw=res.cal.strat.nointer.bw.mice,
+                                    # smcfcs.bw=res.cal.strat.nointer.bw.smc,
+                                    complete=res.cal.strat.nointer.nobw.COMPL)
+  save(res.cal.strat.nointer, file=paste0(modelsPath,"res.cal.strat.nointer","_RED" ,Rdata.suffix))
+}else{
+ res.cal.strat.nointer <- loadRData(paste0(modelsPath,"res.cal.strat.nointer","_RED" ,Rdata.suffix))
+}
+
+
+print(res.cal.strat.nointer$mice$`6`$cPlot)
+# res.cal.strat.nointer$smcfcs$cPlot
+res.cal.strat.nointer$mice.bw$`6`$cPlot
+# res.cal.strat.nointer$smcfcs.bw$cPlot
+res.cal.strat.nointer$complete$`6`$cPlot
+
+```
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=5, fig.height=4}
+
+```
+
+When either of the two lines (apparent, or bias corrected)is above the "Ideal" line, this tells us the model underpredicts in that range of predicted probabilities. When either line is below the "Ideal" line, the model overpredicts in that range of predicted probabilities. 
+
+
+## Integrated Calibration Index + E50/E90
+
+```{r intCalnoInter,warning=F, message=F,fig.show = 'hold', fig.width=4, fig.height=4,eval=TRUE}
+if(isTRUE(run_clean)){
+  #Missing no BW
+
+  fitObj= res.cal.strat.nointer$mice$`36`$fit
+  ############
+  set.seed(100)
+  boot_straps <- rsample::bootstraps(orig.imp.list.cox.s, times = myBoot)
+  
+  numsum_b<- list()
+  for(i in 1:length(boot_straps$splits)){
+    split <- boot_straps$splits[[i]]
+    # split <- as.data.frame(split)
+    pred <- riskRegression::predictRisk(fitObj,
+                                        newdata = analysis(split),
+                                        times = myHorizons[c(5)])
+  
+  
+  
+    pred.cll <- log(-log(1 - pred))
+  
+    # Estimate actual risk - basic model
+    # d <- datadist(analysis(split))
+    # options(datadist=d)
+    vcal <- rms::cph(formula=modelFormula(surv_time,surv_status,"rcs(pred.cll, 4)"),
+                     x = T,
+                     y = T,
+                     surv = T,
+                     data = analysis(split)
+    )
+  
+  
+    # Save objects needed
+    cox.surv <- rms::survest(vcal,
+                             times = myHorizons[c(5)],
+                             newdata = analysis(split))
+    db_cal_boot <- data.frame(
+      "obs" = 1 - cox.surv$surv,
+  
+      "lower" = 1 - cox.surv$upper,
+  
+      "upper" = 1 - cox.surv$lower,
+  
+      "pred" = pred
+    )
+  
+    absdiff_boot <- abs(db_cal_boot$obs - db_cal_boot$pred)
+  
+  
+    res_cal_boot <- data.frame(
+      "ICI" = mean(absdiff_boot, na.rm=T),
+      "E50" = quantile(absdiff_boot, probs = .5, na.rm=T),
+      "E90" = quantile(absdiff_boot, probs = .9, na.rm=T)
+    )
+    # res_cal_boot 
+    numsum_b[[i]] <- res_cal_boot
+    # print(res_cal_boot)
+  }
+  
+  numsum_b <- ldply(numsum_b)
+  
+  alpha <- .05
+  res_numcal <- matrix(c(colMeans(numsum_b["ICI"], na.rm=T),
+                         quantile(numsum_b$ICI, probs = alpha / 2, na.rm=T),
+                         quantile(numsum_b$ICI,
+                                  probs = 1 - alpha / 2, na.rm=T),
+  
+                         colMeans(numsum_b["E50"], na.rm=T),
+                         quantile(numsum_b$E50, probs = alpha / 2, na.rm=T),
+                         quantile(numsum_b$E50,
+                                  probs = 1 - alpha / 2, na.rm=T),
+  
+                         colMeans(numsum_b["E90"], na.rm=T),
+                         quantile(numsum_b$E90, probs = alpha / 2, na.rm=T),
+                         quantile(numsum_b$E90,
+                                  probs = 1 - alpha / 2, na.rm=T)),
+                       nrow = 1,
+                       ncol = 9,
+                       byrow = T,
+                       dimnames = list(
+                         c("Missing data (SI)"),
+                         c(c("ICI", "Lower.95", "Upper.95"),
+                           c("E50", "Lower.95", "Upper.95"),
+                           c("E90", "Lower.95", "Upper.95"))
+                       ))
+  
+  
+  res_numcal <- round(res_numcal, 3)
+  
+  
+  #Missing with BW
+  
+  fitObj= res.cal.strat.nointer$mice.bw$`36`$fit
+  ############
+  set.seed(100)
+  boot_straps <- rsample::bootstraps(orig.imp.list.cox.s, times = myBoot)
+  
+  numsum_b<- list()
+  for(i in 1:length(boot_straps$splits)){
+    split <- boot_straps$splits[[i]]
+    # split <- as.data.frame(split)
+    pred <- riskRegression::predictRisk(fitObj,
+                                        newdata = analysis(split),
+                                        times = myHorizons[c(5)])
+  
+  
+  
+    pred.cll <- log(-log(1 - pred))
+  
+    # Estimate actual risk - basic model
+    # d <- datadist(analysis(split))
+    # options(datadist=d)
+    vcal <- rms::cph(formula=modelFormula(surv_time,surv_status,"rcs(pred.cll, 4)"),
+                     x = T,
+                     y = T,
+                     surv = T,
+                     data = analysis(split)
+    )
+  
+  
+    # Save objects needed
+    cox.surv <- rms::survest(vcal,
+                             times = myHorizons[c(5)],
+                             newdata = analysis(split))
+    db_cal_boot <- data.frame(
+      "obs" = 1 - cox.surv$surv,
+  
+      "lower" = 1 - cox.surv$upper,
+  
+      "upper" = 1 - cox.surv$lower,
+  
+      "pred" = pred
+    )
+  
+    absdiff_boot <- abs(db_cal_boot$obs - db_cal_boot$pred)
+  
+  
+    res_cal_boot <- data.frame(
+      "ICI" = mean(absdiff_boot, na.rm=T),
+      "E50" = quantile(absdiff_boot, probs = .5, na.rm=T),
+      "E90" = quantile(absdiff_boot, probs = .9, na.rm=T)
+    )
+    # res_cal_boot 
+    numsum_b[[i]] <- res_cal_boot
+    # print(res_cal_boot)
+  }
+  
+  numsum_b <- ldply(numsum_b)
+  
+  alpha <- .05
+  res_numcal.MI.bw <- matrix(c(colMeans(numsum_b["ICI"], na.rm=T),
+                         quantile(numsum_b$ICI, probs = alpha / 2, na.rm=T),
+                         quantile(numsum_b$ICI,
+                                  probs = 1 - alpha / 2, na.rm=T),
+  
+                         colMeans(numsum_b["E50"], na.rm=T),
+                         quantile(numsum_b$E50, probs = alpha / 2, na.rm=T),
+                         quantile(numsum_b$E50,
+                                  probs = 1 - alpha / 2, na.rm=T),
+  
+                         colMeans(numsum_b["E90"], na.rm=T),
+                         quantile(numsum_b$E90, probs = alpha / 2, na.rm=T),
+                         quantile(numsum_b$E90,
+                                  probs = 1 - alpha / 2, na.rm=T)),
+                       nrow = 1,
+                       ncol = 9,
+                       byrow = T,
+                       dimnames = list(
+                         c("Missing data with BW (SI)"),
+                         c(c("ICI", "Lower.95", "Upper.95"),
+                           c("E50", "Lower.95", "Upper.95"),
+                           c("E90", "Lower.95", "Upper.95"))
+                       ))
+  
+  
+  res_numcal.MI.bw <- round(res_numcal.MI.bw, 3)
+  
+  
+  #Complete
+  
+  fitObj= res.cal.strat.nointer$complete$`36`$fit
+  ############
+  set.seed(100)
+  boot_straps <- rsample::bootstraps(data.complete, times = myBoot)
+  
+  numsum_b<- list()
+  for(i in 1:length(boot_straps$splits)){
+    split <- boot_straps$splits[[i]]
+    # split <- as.data.frame(split)
+    pred <- riskRegression::predictRisk(fitObj,
+                                        newdata = analysis(split),
+                                        times = myHorizons[c(5)])
+  
+  
+  
+    pred.cll <- log(-log(1 - pred))
+  
+    # Estimate actual risk - basic model
+    # d <- datadist(analysis(split))
+    # options(datadist=d)
+    vcal <- rms::cph(formula=modelFormula(surv_time,surv_status,"rcs(pred.cll, 4)"),
+                     x = T,
+                     y = T,
+                     surv = T,
+                     data = analysis(split)
+    )
+  
+  
+    # Save objects needed
+    cox.surv <- rms::survest(vcal,
+                             times =myHorizons[c(5)],
+                             newdata = analysis(split))
+    db_cal_boot <- data.frame(
+      "obs" = 1 - cox.surv$surv,
+  
+      "lower" = 1 - cox.surv$upper,
+  
+      "upper" = 1 - cox.surv$lower,
+  
+      "pred" = pred
+    )
+  
+    absdiff_boot <- abs(db_cal_boot$obs - db_cal_boot$pred)
+  
+  
+    res_cal_boot <- data.frame(
+      "ICI" = mean(absdiff_boot, na.rm=T),
+      "E50" = quantile(absdiff_boot, probs = .5, na.rm=T),
+      "E90" = quantile(absdiff_boot, probs = .9, na.rm=T)
+    )
+    # res_cal_boot 
+    numsum_b[[i]] <- res_cal_boot
+    # print(res_cal_boot)
+  }
+  
+  numsum_b <- ldply(numsum_b)
+  
+  alpha <- .05
+  res_numcal.comp <- matrix(c(colMeans(numsum_b["ICI"], na.rm=T),
+                         quantile(numsum_b$ICI, probs = alpha / 2, na.rm=T),
+                         quantile(numsum_b$ICI,
+                                  probs = 1 - alpha / 2, na.rm=T),
+  
+                         colMeans(numsum_b["E50"], na.rm=T),
+                         quantile(numsum_b$E50, probs = alpha / 2, na.rm=T),
+                         quantile(numsum_b$E50,
+                                  probs = 1 - alpha / 2, na.rm=T),
+  
+                         colMeans(numsum_b["E90"], na.rm=T),
+                         quantile(numsum_b$E90, probs = alpha / 2, na.rm=T),
+                         quantile(numsum_b$E90,
+                                  probs = 1 - alpha / 2, na.rm=T)),
+                       nrow = 1,
+                       ncol = 9,
+                       byrow = T,
+                       dimnames = list(
+                         c("Complete data"),
+                         c(c("ICI", "Lower.95", "Upper.95"),
+                           c("E50", "Lower.95", "Upper.95"),
+                           c("E90", "Lower.95", "Upper.95"))
+                       ))
+  
+  
+  res_numcal.comp <- round(res_numcal.comp, 3)
+ 
+  res_numcal.strata.nointer <- rbind(res_numcal,res_numcal.MI.bw, res_numcal.comp)
+  save(res_numcal.strata.nointer, file=paste0(projectOutDataPath,"res_numcal.strata.nointer","_RED" ,Rdata.suffix))
+}else{
+  res_numcal.strata.nointer <- loadRData(paste0(projectOutDataPath,"res_numcal.strata.nointer","_RED" ,Rdata.suffix))
+}
+
+```
+
+
+```{r,warning=F, message=F,eval=TRUE}
+datatable(res_numcal.strata.nointer, extensions = 'Buttons', options = list(
+    dom = 'Bfrtip',
+    buttons = c('copy', 'excel', 'csv' ),
+    scrollX=TRUE,
+    pageLength=15
+  ),
+  caption = ''
+)
+```
+
+
+
+## Clinical utility-Net benefit {.tabset .tabset-fade .tabset-pills}
+
+### All separate
+
+We smoothed the decision curves based on the risk prediction models to reduce the visual impact of random noise using the ```stats::smooth()``` function.  
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=4, fig.height=4}
+# No BW
+res.pooled.strata.nointer.nobw<- myDCA(data=orig.imp.list.cox.s, testdata=orig.imp.list.cox.s,
+      fitObj=fit.pooled, time=surv_time, status=surv_status,
+      manualCalc=F,
+      timePoint=42,
+      features=feats.trans.strata,
+      predName="MI_model")
+
+res.pooled.strata.nointer.nobw.f<- myDCA(data=orig.imp.list.cox.s, testdata=orig.imp.list.cox.s,
+      fitObj=fit.pooled.c, time=surv_time, status=surv_status,
+      manualCalc=T,
+      timePoint=42,
+      features=feats.trans.strata.f,
+      predName="MI_model")
+
+# With BW
+features = makeComplexFormula(features=pool_coxr.cox.nointer.bw$predictors_final, 
+                   rcsFeats=NULL, 
+                   knots=NULL, 
+                   interactions=NULL,
+                   strataFeats=NULL)
+res.pooled.strata.nointer.nobw<- myDCA(data=orig.imp.list.cox.s, testdata=orig.imp.list.cox.s,
+      fitObj=fit.pooled.bw, time=surv_time, status=surv_status,
+      manualCalc=F,
+      timePoint=42,
+      features=features,
+      predName="MI_model_BW")
+
+## COMPLETE
+
+res.strata.nointer.nobw.COMPL<- myDCA(data=data.complete, testdata=data.complete,
+      fitObj=fit.strata.nointer.nobw.COMPL,time=surv_time, status=surv_status,
+      manualCalc=F,
+      timePoint=42,
+      features=feats.trans.strata,
+      predName="Complete")
+
+
+```
+### Save models
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=4, fig.height=4}
+
+finalModel_noInter <- list(nobw=fit.pooled.c,
+                           feats_nobw=feats.trans.strata,
+                           feats_nobw.c=feats.trans.strata.f,
+                           bw=fit.pooled.bw.c,
+                           feats_bw=features,
+                           feats_bw.c=makeComplexFormula(features=pool_coxr.cox.nointer.bw$predictors_final[1:6], 
+                   rcsFeats=c(numeric_feats.ext[1]), 
+                   knots=c(3), 
+                   interactions=NULL,
+                   strataFeats=c(categ_feats[9]),
+                   knotsPos=list(Knots)),
+                           si_data=orig.imp.list.cox.s,
+                           pool_coxr.cox.nointer=pool_coxr.cox.nointer,
+                          pool_coxr.cox.nointer.bw=pool_coxr.cox.nointer.bw)
+# Save objects
+
+save(finalModel_noInter, file=paste0(modelsPath,"finalModel_noInter","_RED" ,Rdata.suffix))
+```
+
+## Make survival predictions with CIs
+
+First find knots used for age transformation with restricted cubic splines, to be used for making future predictions.
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=4, fig.height=4}
+
+rcsKnotAIC_Cox(DF=data.original.ext.cox , endopoint=OS_time, event=OS_status,
+                           predictor="Age_first_Treatment", nk=3,nBoots=myBoot)#%>% na.omit()
+
+#49.00 70.05 83.00
+Knots <- rcspline.eval(data.original.ext.cox$Age_first_Treatment  %>% na.omit(), knots.only = TRUE,nk=3,inclx=TRUE) 
+Knots
+
+```
+
+To make predictions on new data, we have to fixate the knot locations. To fixate the knot locations, we cant't use the rcs function, but the rcspline.eval function, that takes knot locations as an argument. We can use the same function to calculate where the knots "should" be. If we you have a different distribution than the original data, knots are going to be at different locations and it will change the curve.
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=4, fig.height=4}
+
+
+## WITHOUT BW
+feats.trans.strata.f <-makeComplexFormula(features=c(categ_feats[-c(9)],numeric_feats.ext[3]),
+                   rcsFeats=c(numeric_feats.ext[1]),
+                   knots=c(3),
+                   interactions=NULL,
+                   strataFeats=c(categ_feats[9]),
+                   knotsPos=list(Knots))
+
+somData <- orig.imp.list.cox.s %>% dplyr::select(-nelsonaalen,-Age_first_Treatment_1)
+
+SURV.pooled.strata.nointer.nobw<- getSurvProb_nice(data=somData, testdata=somData[605,] %>% dplyr::select(-First_line_treatments),
+      fitObj=fit.pooled, time=surv_time, status=surv_status,
+      manualCalc=F,
+      timePoint=myHorizons[c(1)],#,2,4,6
+      features=feats.trans.strata,
+      predName="MI_model",
+      strataVar="First_line_treatments")
+# x <-fit.pooled2$terms
+# at <- attributes(x)
+# at$term.labels
+# at$dataClasses
+# fit.pooled2$x
+
+SURV.pooled.strata.nointer.nobw.f<- getSurvProb_nice(data=somData, testdata=somData[605,] %>% dplyr::select(-First_line_treatments),
+      fitObj=fit.pooled.c, time=surv_time, status=surv_status,
+      manualCalc=T,
+      timePoint=myHorizons[c(1)],#,2,4,6
+      features=feats.trans.strata.f,
+      predName="MI_model",
+      strataVar="First_line_treatments")
+
+
+
+
+## WITH BW
+features = makeComplexFormula(features=pool_coxr.cox.nointer.bw$predictors_final[c(1:6)], 
+                   rcsFeats=c(numeric_feats.ext[1]), 
+                   knots=NULL, 
+                   interactions=NULL,
+                   strataFeats=c(categ_feats[9]),
+                   knotsPos=list(Knots))
+
+SURV.pooled.strata.nointer.bw<- getSurvProb_nice(data=somData, testdata=somData[605,] %>% dplyr::select(-First_line_treatments),
+      fitObj=fit.pooled.bw, time=surv_time, status=surv_status,
+      manualCalc=F,
+      timePoint=myHorizons,
+      features=features,
+      predName="MI_model",
+      strataVar="First_line_treatments")
+
+SURV.strata.nointer.nobw.COMPL<- getSurvProb_nice(data=data.complete, testdata=somData[605,]%>% dplyr::select(-First_line_treatments),
+      fitObj=fit.strata.nointer.nobw.COMPL,time=surv_time, status=surv_status,
+      manualCalc=F,
+      timePoint=myHorizons,
+      features=feats.trans.strata,
+      predName="Complete")
+
+
+```
+
+# Session info
+
+```{r,warning=F, message=F,eval=TRUE}
+session_info <- sessionInfo()
+writeLines(capture.output(session_info), paste0(sessionInfoPath,"prognostic_prediction_model.txt"))
+
+sessionInfo()
+
+```

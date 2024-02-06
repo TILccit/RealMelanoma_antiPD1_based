@@ -1,0 +1,1540 @@
+---
+title: "Sustained improved survival of patients with metastatic melanoma after the introduction of anti-PD-1-based therapies"
+subtitle: <center> Descriptive and survival analyses/modeling, tables & figures for paper </center>
+author: "Aimilia Schina"
+date: '`r paste("First created on May 2022. Updated on ", format(Sys.Date(), "%d %B %Y"))`'
+output:
+  html_document:
+    css: style.css
+    code_folding: hide
+    #smooth_scroll: yes
+    fig_caption: yes
+    #highlight: textmate
+    #theme: cerulean
+    #theme: simplex
+    toc: yes
+    toc_float:
+      collapsed: true
+      smooth_scroll: true
+    toc_depth: 5
+    number_sections: true
+    #df_print: paged
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = 'D:/BIOINF/PROJECTS/2_ANALYSES/18_GIT_PAPERS/RealMelanoma_antiPD1_based')
+```
+
+
+```{r,warning=F, message=F}
+RNGkind(sample.kind = "Rounding")
+## Clear R-workspace
+rm(list=ls(all=TRUE))
+
+## Close all graphic devices
+graphics.off()
+#####################
+### Load packages ###
+#####################
+library(pacman)
+pacman::p_load(extrafont,DT, dplyr,data.table, tibble,dataMaid, Amelia,
+               ggplot2,ggpubr,survival,
+               gtsummary,forcats,ggstatsplot,ezfun, officer,
+               flextable,readxl,cowplot,hrbrthemes,ggrepel,survminer, stringr,ggpmisc,patchwork,ggsci,tidyverse,gridExtra)
+other_pckgs <- c("lubridate", "scales")
+require(other_pckgs)
+
+###########################
+
+windowsFonts(Palatino=windowsFont("Palatino"))
+
+extrafont::loadfonts(device="win")
+windowsFonts(`Palatino`="Palatino")
+loadfonts(device="win")
+loadfonts(device="postscript")
+```
+
+```{r,warning=F, message=F}
+###########################
+### Main analysis paths ###
+###########################
+
+scriptsPath <- paste0("scripts/")
+scriptsFunctionsPath <- paste0(scriptsPath,"functions/")
+projectDataPath <- paste0("data/")
+projectOutDataPath <- paste0("output/data_files/")
+figuresPath <- paste0("output/figures/")
+tablesPath <- paste0("output/tables/")
+sessionInfoPath <- paste0("session_info/")
+
+
+##################################
+### LOAD SOURCE FUNCTIONS FILE ###
+##################################
+source(paste0(scriptsFunctionsPath,"data_preprocessing_functions.R"))
+
+#####################
+### File suffixes ###
+#####################
+Rdata.suffix <- ".RData"
+
+
+```
+
+# Data {.tabset .tabset-fade .tabset-pills}
+
+## Loading merged document
+
+```{r ,warning=F, message=F,eval=TRUE}
+
+dataDF.new <- read_excel(paste0(projectDataPath, "MERGED_27022023.xlsx")) %>% as.data.frame()
+
+
+table(dataDF.new$`Year of diagnosis`)
+table(dataDF.new$`Year of diagnosis`, dataDF.new$firstLine)
+table(dataDF.new$linje1_v2,dataDF.new$firstLine)
+table(dataDF.new$firstLine)
+```
+
+
+***
+
+Total of patients used for the project: `r nrow(dataDF.new)``
+
+***
+
+
+```{r,warning=F, message=F,eval=FALSE}
+
+datatable(dataDF.new %>% dplyr::filter(firstLine %in% c("Experimental Treatments")) %>% droplevels(), extensions = 'Buttons', options = list(
+    dom = 'Bfrtip',
+    buttons = c('copy', 'excel', 'csv' ),
+    scrollX=TRUE,
+    pageLength=15
+  ),
+  caption = 'Patient data, experimental treatments'
+)
+```
+
+
+### Data with missing values in all parameters
+
+```{r ,warning=F, message=F,eval=TRUE}
+# Fix the brainmets (will include NAs)and BRAIN (will not include NAs-all unknown are marked as no) columns
+dataDF.new<-dataDF.new %>% add_column(`brainmets_final`= ifelse(dataDF.new$brainmets %in% c("Yes - not active metastases","Yes - active metastases","Yes"),"yes",
+                                     ifelse(dataDF.new$brainmets %in% c("No metastases","No"),"no",NA)), .after ="brainmets" )
+
+# Replace BRAIN with correct
+dataDF.new$BRAIN <- ifelse(is.na(dataDF.new$brainmets_final),"no",dataDF.new$brainmets_final) # FOR ELIGIBILITY, eliminates NAs
+
+dataDF.new$PS <- ifelse(dataDF.new$PS %in% c("YES","Yes","yes"),"yes", "no") # FOR ELIGIBILITY, eliminates NAs
+                        
+dataDF.new$Steroids <- ifelse(dataDF.new$Steroids %in% c("YES","Yes","yes"),"yes", "no") # IN GENERAL ALL NAs ASSIGNED TO NO
+                        
+dataDF.new$Comorbidities <- ifelse(dataDF.new$Comorbidities %in% c("YES","Yes","yes"),"yes",
+                        ifelse(dataDF.new$Comorbidities %in% c("NO","No","no"),"no",NA))
+dataDF.new$COMORB <- ifelse(dataDF.new$Comorbidities %in% c("YES","Yes","yes"),"yes", "no")# FOR ELIGIBILITY, eliminates NAs
+
+dataDF.new$Autoimmune <- ifelse(dataDF.new$Autoimmune %in% c("YES","Yes","yes"),"yes", "no")# IN GENERAL ALL NAs ASSIGNED TO NO
+                        # there is one patient with NA, but in the master file, the other column for autoimmunity has 0 value , which for all other patients meant no
+
+dataDF.new$Other_Malignancies <- ifelse(dataDF.new$Other_Malignancies %in% c("YES","Yes","yes"),"yes",
+                        ifelse(dataDF.new$Other_Malignancies %in% c("NO","No","no"),"no",NA))
+
+dataDF.new$OTHERMAL <- ifelse(dataDF.new$Other_Malignancies %in% c("YES","Yes","yes"),"yes","no")
+
+dataDF.new$EligibilityCount <-rowSums(dataDF.new %>% dplyr::select(all_of(c("PS","BRAIN","Steroids","COMORB","Autoimmune","OTHERMAL")))=="yes")
+
+dataDF.new$eligible <- ifelse(dataDF.new$EligibilityCount==0, "eligible", "noneligible")
+
+table(dataDF.new$eligible)
+table(dataDF.new$`Year of diagnosis`,dataDF.new$eligible)
+
+# Fix colnames for brain mets to help later
+colnames(dataDF.new)[c(9,10,17)] <- c("brainmets_orig","brainmets","Brain metastases")
+
+# Remove columns we do not want anymore
+dataDF.new <- dataDF.new %>% dplyr::select(-all_of(c("linje1","linje1_v2","brainmets_orig", "brainmets","PS","COMORB","OTHERMAL", "EligibilityCount")))
+```
+
+Add factor levels
+
+```{r ,warning=F, message=F,eval=TRUE}
+
+# unique(dataDF.new$gender)
+# unique(dataDF.new$braf)
+dataDF.new$braf <- ifelse(dataDF.new$braf=="BRAF wild-type", "Wild-type",
+                          ifelse(dataDF.new$braf %in% c("BRAF mutant","V600E","V600K","V600x", "Other"), "Mutant",
+                                 ifelse(dataDF.new$braf=="Not tested",NA,dataDF.new$braf)))
+# unique(dataDF.new$`Brain metastases`)
+# 
+# unique(dataDF.new$STAGE)
+# Three possibilities for stage
+dataDF.new <- dataDF.new %>% add_column(STAGE_v1= ifelse(dataDF.new$STAGE %in% c("M1a","M1b"),"M1a/M1b",
+                          ifelse(dataDF.new$STAGE %in% c("M1c","M1d"),"M1c/M1d",
+                                 dataDF.new$STAGE)), .after ="STAGE" )
+
+dataDF.new <- dataDF.new %>% add_column(STAGE_v2= ifelse(dataDF.new$STAGE %in% c("M1a","M1b","III"),"III/M1a/M1b",
+                          ifelse(dataDF.new$STAGE %in% c("M1c","M1d"),"M1c/M1d",
+                                 dataDF.new$STAGE)), .after ="STAGE_v1" )
+
+# unique(dataDF.new$STAGE_v1)
+# unique(dataDF.new$STAGE_v2)
+
+#"M1b" "M1a" "M1c" "III" "M1d"
+## PERFORMANCE STATUS
+# unique(dataDF.new$who)
+#3  0  1  2 NA  4
+dataDF.new <- dataDF.new %>% add_column(Performance_Status= ifelse(dataDF.new$who %in% c(0,1), "0/1",
+                                     ifelse(dataDF.new$who %in% c(2,3,4),"2/3/4",
+                                     ifelse(dataDF.new$who %in% c(NA),NA,dataDF.new$who))), .after ="who" )
+#≥
+## LDH as categrical
+LDH.cat <- dataDF.new %>% select(age,ldh_format) %>% dplyr::mutate(LDHcat = case_when(age <= 69 & ldh_format >=205 ~"high",
+                                      age <=69 & ldh_format < 205 ~ "low",
+                                      age >69 & ldh_format >= 255 ~ "high",
+                                      age >69 & ldh_format <255 ~ "low",
+                                      TRUE ~ as.character(ldh_format))) %>% pull(LDHcat)
+
+dataDF.new <- dataDF.new %>% add_column(LDH= factor(LDH.cat, levels=c("high","low")), .after ="ldh_format" )
+
+# table(dataDF.new$LDH)
+
+### ADDITIONAL COLUMNS
+# Performance status (as yes no)
+# unique(dataDF.new$who)
+dataDF.new <- dataDF.new %>% add_column(`PS = 0`= ifelse(dataDF.new$who %in% c(0), "yes",
+                                     ifelse(dataDF.new$who %in% c(1,2,3,4),"no",
+                                     ifelse(dataDF.new$who %in% c(NA),NA,dataDF.new$who))), .after ="Performance_Status" )
+
+
+
+# Age
+age_thres <- round(median(dataDF.new$age, na.rm=TRUE),0)# rounded
+dataDF.new <- dataDF.new %>% add_column(`Age categories`= ifelse(dataDF.new$age >= age_thres, ">= 69 years",
+                                     ifelse(dataDF.new$age < age_thres, "< 69 years",NA)), .after ="age" )
+
+# LDH
+dataDF.new <- dataDF.new %>% add_column(`LDH level`= ifelse(dataDF.new$LDH =="high", ">= ULN",
+                                     ifelse(dataDF.new$LDH =="low", "< ULN",NA)), .after ="LDH" )
+
+#"PS = 0",`Brain metastases`,`Brain Metastases & Steroids`,`Age categories`,`LDH level`
+
+# Gender
+
+
+```
+
+
+Change variables names, so that they are ready for visualizations and tables and also their levels.
+
+```{r ,warning=F, message=F,eval=TRUE}
+colnames(dataDF.new)[c(3,4,
+                       7,
+                       10,15,
+                       22,23,
+                       24)] <- c("Gender","Age at 1st Treatment",
+                                                      "BRAF status",
+                                                      "Disease stage","Performance status", 
+                                                      "Autoimmunity", "Other malignancies", 
+                                                      "First-line treatments")
+```
+
+Set levels of factors for categorical features.
+
+Features of interest:
+
+1. Year of diagnosis - char
+2. gender (Gender) - char
+3. age (Age at 1st Treatment)- numb
+4. braf (BRAF status)- char
+5. firstLine (First-line treatments)- char
+6. brainmets (Brain mets/Brain metastases/Brain Metastases plus Steroids)- char
+7. STAGE_v2 (Disease stage)- char
+8. LDH  (LDH level)- char
+9. Performance_Status (Performance status/PS=0)  - char
+10. Steroids - char
+11. Comorbidities  - char
+12. Autoimmune (Autoimmunity)  - char
+13. Other_Malignancies (Other malignancies)  - char
+14. eligible  - char
+
+Survival columns:
+
+A. Months_to_death_or_last_seen (time)
+B. Dead_or_alive (event)
+
+```{r ,warning=F, message=F,eval=TRUE}
+
+dataDF.new$`Year of diagnosis` <- factor(dataDF.new$`Year of diagnosis`, levels = c("2012", "2014", "2016", "2018"))
+dataDF.new$Gender <- factor(dataDF.new$Gender, levels = c("M", "F"))
+dataDF.new$`BRAF status` <- factor(dataDF.new$`BRAF status`, levels = c("Wild-type", "Mutant"))
+dataDF.new$`First-line treatments` <- as.factor(dataDF.new$`First-line treatments`)
+dataDF.new$`First-line treatments` <- relevel(dataDF.new$`First-line treatments`,"No treatment")
+dataDF.new$`Brain metastases` <- factor(dataDF.new$`Brain metastases`, levels = c("no","yes"))# no NAs
+
+dataDF.new$`Disease stage` <- factor(dataDF.new$`Disease stage`, levels = c("M1c/M1d","III/M1a/M1b"))
+dataDF.new$`Performance status` <- factor(dataDF.new$`Performance status`, levels = c("0/1","2/3/4"))
+dataDF.new$`PS = 0` <- factor(dataDF.new$`PS = 0`, levels = c("no","yes"))
+dataDF.new$Steroids <- factor(dataDF.new$Steroids, levels = c("no", "yes"))
+dataDF.new$Comorbidities <- factor(dataDF.new$Comorbidities, levels = c("no", "yes"))
+dataDF.new$Autoimmunity <- factor(dataDF.new$Autoimmunity, levels = c("no", "yes"))
+dataDF.new$`Other malignancies`<- factor(dataDF.new$`Other malignancies`, levels = c("no", "yes"))
+dataDF.new$`Age categories` <- factor(dataDF.new$`Age categories`, levels = c("< 69 years", ">= 69 years"))
+dataDF.new$`LDH level` <- factor(dataDF.new$`LDH level`, levels = c(">= ULN", "< ULN"))
+
+
+colnames(dataDF.new)[2] <-"Year_of_diagnosis"
+```
+
+```{r ,warning=F, message=F,eval=TRUE}
+
+# Final cleanup
+dataDF.new <- dataDF.new %>% dplyr::select(-all_of(c("PS = 0","melanoma_diagnosis","STAGE_v1","LDH", "who")))#"STAGE", 
+summary(dataDF.new)
+
+dataDF.new %>% dplyr::filter(Year_of_diagnosis %in% c(2016,2018)) %>% droplevels() %>% summary()
+```
+
+
+
+
+
+## Pre-processing of data
+
+* Check that all columns have no spaces etc, especially character columns, 
+* transform character columns to factors. 
+* Check if all factors are ok.
+* Check numerical columns.
+
+We first need to define which columns we want as character (categorical), and which need to be numerical. Sometimes things get messed up with excel files.
+
+1. Year_of_diagnosis - char
+2. gender (Gender) - char
+3. age (Age at 1st Treatment)- numb
+4. braf (BRAF status)- char
+5. firstLine (First-line treatments)- char
+6. brainmets (Brain metastases)- char
+7. STAGE_v2 (Disease stage)- char
+8. LDH  (LDH level)- char
+9. Performance_Status (Performance status/PS=0)  - char
+10. Steroids - char
+11. Comorbidities  - char
+12. Autoimmune (Autoimmunity)  - char
+13. Other_Malignancies (Other malignancies)  - char
+14. eligible  - char
+
+
+```{r,warning=F, message=F,eval=TRUE}
+## HERE we define for which parameters we want to do univariate analysis, and which to include in the multivariate survival analysis. 
+## PLEASE define name as it is on the csv file, the name needs to be in BRACKETS
+features <- c("Year_of_diagnosis","Gender","Age at 1st Treatment","Age categories","BRAF status","First-line treatments",
+              "Brain metastases","Disease stage","LDH level","Performance status","Steroids","Comorbidities","Autoimmunity","Other malignancies","eligible","STAGE")
+
+## Define which columns include survival data
+OS_time <- c("Months_to_death_or_last_seen")
+OS_status <- c("Dead_or_alive")
+# PFS_time <- c("PFS FU MONTHS")
+# PFS_status <- c("PROGRESSED")
+## DEFINE IF YOU ARE DOING OS OR PFS
+surv_time <-OS_time
+surv_status <-OS_status
+surv_time_label <- "OS"
+# KM plots labels
+xlabel=".OS.months"
+
+## DEFINE WHICH COLUMNS ARE CATEGORICAL
+# categ_feats <-c("Year_of_diagnosis","gender","braf","firstLine",
+#               "brainmets","STAGE_v2","LDH","Performance_Status","Steroids","Comorbidities","Autoimmune","Other_Malignancies","eligible")
+
+categ_feats <-c("Year_of_diagnosis","Gender","Age categories","BRAF status","First-line treatments",
+              "Brain metastases","Disease stage","LDH level","Performance status","Steroids","Comorbidities","Autoimmunity","Other malignancies","eligible")
+## DEFINE WHICH COLUMNS ARE NUMERICAL
+# we also add the status and time columns
+numeric_feats <-c("Age at 1st Treatment")
+
+
+```
+
+
+## Save dataframe (final)
+```{r,warning=F, message=F,eval=TRUE}
+dataDF <- dataDF.new %>% select(all_of(c(OS_time,OS_status, features))) %>% distinct()
+
+summary(dataDF)
+
+# Save dataframe for other analyses:
+save(dataDF, file=paste0(projectOutDataPath,"realMel.DF",Rdata.suffix))
+
+
+dataDF.allcont <- dataDF.new %>% select(all_of(c(OS_time,OS_status, features,"ldh_format"))) %>% distinct()
+save(dataDF.allcont, file=paste0(projectOutDataPath,"realMel.DF.allCont",Rdata.suffix))
+
+
+dataDF <- dataDF %>% dplyr::select(-STAGE)
+dataDF.allcont <- dataDF.allcont %>% dplyr::select(-STAGE)
+```
+
+
+# Missing data {.tabset .tabset-fade .tabset-pills}
+
+Check for bad data format in case of missing values:
+
+```{r,warning=F, message=F,eval=FALSE,fig.show = 'hold', fig.width=12, fig.height=8}
+lapply(features, function(x) identifyMissing(dataDF[[x]]))
+```
+
+Make a full report with general checks for problems in the data, the report is included in the folder of the project.
+```{r,warning=F, message=F,eval=FALSE}
+
+makeDataReport(dataDF,file=paste0(projectOutDataPath,"datasetCheck_problems"), reportTitle="Survival and Clinical data Check")
+```
+
+## Missingness map
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=12, fig.height=8}
+missmap(dataDF, col=c("Indian red", "grey"), legend=TRUE,x.cex=1,margins=c(9,5))
+
+
+```
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=12, fig.height=8}
+
+ggplot_missing(dataDF)
+
+```
+
+
+# Barplots
+
+
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=20, fig.height=15}
+barplots.nom<-lapply(categ_feats[-c(1,5,8)], function(x) barplot_nominal(dataDF,x,45,"Counts"))
+# Calculate how many rows and columns I need
+n<-length(barplots.nom);
+graphCols <-ceiling(n/floor(sqrt(n)));
+graphRows<-floor(sqrt(n))
+ggarrange(plotlist = barplots.nom,nrow=graphRows, ncol=graphCols)
+```
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=6, fig.height=6}
+barplot_nominal(dataDF,categ_feats[c(1)],45,"Counts")
+```
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=6, fig.height=6}
+barplot_nominal(dataDF,categ_feats[c(5)],45,"Counts")
+```
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=6, fig.height=6}
+barplot_nominal(dataDF,categ_feats[c(8)],45,"Counts")
+```
+
+# Baseline Characteristics {.tabset .tabset-fade .tabset-pills}
+
+## Age
+Here we want to see if baseline characteristics are similar across age groups.
+
+We first make a new column, age group, divided as:per median
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=6, fig.height=6}
+age_thres <- median(dataDF$`Age at 1st Treatment`, na.rm = TRUE)
+age_thres
+```
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=6, fig.height=6}
+
+hist(dataDF$`Age at 1st Treatment`)
+```
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=6, fig.height=6}
+
+# age_cat <-dataDF %>% select(age) %>% dplyr::mutate(age_group = case_when(age >= age_thres ~ "old",
+#                                         age < age_thres ~ "young",
+#                                         TRUE~ as.character(age))) %>% pull(age_group)
+# 
+# 
+# dataDF <- dataDF %>% add_column(age_group= factor(age_cat, levels=c("old","young")), .after ="age" )
+
+```
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hide', fig.width=15, fig.height=10}
+bars.age <-lapply(categ_feats[-c(1,3)], function(x) barplot_nominal_fac(dataDF,"Age categories",45,facetVariable = x))
+
+```
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=18, fig.height=10}
+
+n<-length(bars.age);
+graphCols <-ceiling(n/floor(sqrt(n)));
+graphRows<-floor(sqrt(n))
+ggarrange(plotlist = bars.age,nrow=graphRows, ncol=graphCols)
+```
+
+## Eligibility
+
+Here we want to see if baseline characteristics are similar across eligibility groups.
+
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hide', fig.width=15, fig.height=10}
+# barplot_nominal_fac(dataDF,"age_group",45,facetVariable = "gender")
+
+bars.el<-lapply(c(categ_feats[c(1:13)]), function(x) barplot_nominal_fac(dataDF,"eligible",45,facetVariable = x))
+```
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=18, fig.height=10}
+
+n<-length(bars.el);
+graphCols <-ceiling(n/floor(sqrt(n)));
+graphRows<-floor(sqrt(n))
+ggarrange(plotlist = bars.el,nrow=graphRows, ncol=graphCols)
+```
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=6, fig.height=6}
+table(dataDF$eligible,dataDF$Year_of_diagnosis)
+
+```
+
+
+
+# Baseline characteristics of patients diagnosed in 2012,2014,2016 and 2018
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=5, fig.height=4}
+
+
+dataDF$eligible <- as.character(dataDF$eligible)
+dataDF$eligible <- ifelse(dataDF$eligible=="eligible", "trial-like", "trial-excluded")
+dataDF$eligible <- factor(dataDF$eligible, levels = c("trial-excluded", "trial-like"))
+```
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=5, fig.height=4}
+
+dataDF$eligible <- relevel(dataDF$eligible, ref="trial-like")
+myPieChart(dataDF, "eligible",filterVar=NULL,filterSel="Eligibility")
+
+```
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=10, fig.height=8}
+
+pie.el<-lapply(levels(dataDF$Year_of_diagnosis), function(x) myPieChart2(dataDF, "eligible",filterVar="Year_of_diagnosis",filterSel=x, "Eligibility",fontSize = 0.87, fillPal = ccf_cols(c("surf_crest","silver_sand","ccf_green",  "maroon_flush")), repel=F
+))
+
+n<-length(pie.el);
+graphCols <-ceiling(n/floor(sqrt(n)));
+graphRows<-floor(sqrt(n))
+ggarrange(plotlist = pie.el,nrow=graphRows, ncol=graphCols, common.legend = TRUE, legend = "bottom")
+
+
+
+```
+
+# First line treatment in all {.tabset .tabset-fade .tabset-pills}
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=10, fig.height=8}
+
+
+dataDF$treated <- ifelse(dataDF$`First-line treatments`=="No treatment","not treated","treated" )
+dataDF$treated <- factor(dataDF$treated, levels=c("not treated","treated"))
+
+dataDF.exc <- dataDF %>% dplyr::filter(eligible=="trial-excluded") %>% droplevels()
+pie.tr<-lapply(levels(dataDF.exc$Year_of_diagnosis), function(x) myPieChart2(dataDF.exc, "treated",filterVar="Year_of_diagnosis",filterSel=x, "",fontSize = 0.87, fillPal = ccf_cols(c("maroon_flush","silver_sand","ccf_green",  "maroon_flush")), repel=F
+))
+
+n<-length(pie.tr);
+graphCols <-ceiling(n/floor(sqrt(n)));
+graphRows<-floor(sqrt(n))
+ggarrange(plotlist = pie.tr,nrow=graphRows, ncol=graphCols, common.legend = TRUE, legend = "bottom")
+
+
+
+```
+
+
+
+# First line treatment in trial-like/excluded {.tabset .tabset-fade .tabset-pills}
+
+## **OVERALL**
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=22, fig.height=15}
+myfillPal = c("Anti-PD-1" = "#B3E2CD",
+          "IFN/IL2"="#FDCDAC",
+          "Anti-CTLA-4"="#CBD5E8",
+          "BRAFi" = "#F4CAE4",
+          "Anti-PD-1 plus Anti-CTLA-4" = "#E6F5C9",
+          "Temozolomid" = "#FFF2AE",
+          "No treatment" = "Indian red",
+          "Experimental Treatments" = "lightblue" ,
+          "T cells" = "#CCCCCC",
+          "IL2 intralesional" = "#F1E2CC")
+# pie.trt<-lapply(levels(dataDF$eligible), function(x) myPieChart(dataDF, "firstLine",filterVar="eligible",filterSel=x))
+
+pie.trt<-lapply(levels(dataDF$eligible), function(x) myPieChart2(dataDF, "First-line treatments",filterVar="eligible",filterSel=x, "First Line Treatment",fontSize = 1.7,fillPal = myfillPal))
+
+n<-length(pie.trt);
+graphCols <-ceiling(n/floor(sqrt(n)));
+graphRows<-floor(sqrt(n))
+ggarrange(plotlist = pie.trt,nrow=graphRows, ncol=graphCols, common.legend = TRUE, legend="bottom")
+```
+
+## **2012**
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8}
+
+
+# pie.trt.2012<-lapply(levels(dataDF$eligible), function(x) myPieChart(dataDF %>% dplyr::filter(Year_of_diagnosis=="2012")%>% droplevels(), "firstLine",filterVar="eligible",filterSel=x))
+
+pie.trt.2012<-lapply(levels(dataDF$eligible), function(x) myPieChart2(dataDF %>% dplyr::filter(Year_of_diagnosis=="2012")%>% droplevels(), "First-line treatments",filterVar="eligible",filterSel=x,"First Line Treatment",fontSize = 1,fillPal = myfillPal))
+
+
+n<-length(pie.trt.2012);
+graphCols <-ceiling(n/floor(sqrt(n)));
+graphRows<-floor(sqrt(n))
+ggarrange(plotlist = pie.trt.2012,nrow=graphRows, ncol=graphCols, common.legend = TRUE, legend="bottom")
+```
+
+## **2014**
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8}
+
+pie.trt.2014<-lapply(levels(dataDF$eligible), function(x) myPieChart2(dataDF %>% dplyr::filter(Year_of_diagnosis=="2014") %>% droplevels(), "First-line treatments",filterVar="eligible",filterSel=x,"First Line Treatment",fontSize = 1.3,fillPal = myfillPal))
+
+n<-length(pie.trt.2014);
+graphCols <-ceiling(n/floor(sqrt(n)));
+graphRows<-floor(sqrt(n))
+ggarrange(plotlist = pie.trt.2014,nrow=graphRows, ncol=graphCols, common.legend = TRUE, legend="bottom")
+```
+
+## **2016**
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=19, fig.height=12}
+
+
+pie.trt.2016<-lapply(levels(dataDF$eligible), function(x) myPieChart2(dataDF %>% dplyr::filter(Year_of_diagnosis=="2016") %>% droplevels(), "First-line treatments",filterVar="eligible",filterSel=x,"First Line Treatment",fontSize = 1.6,fillPal = myfillPal))
+
+n<-length(pie.trt.2016);
+graphCols <-ceiling(n/floor(sqrt(n)));
+graphRows<-floor(sqrt(n))
+ggarrange(plotlist = pie.trt.2016,nrow=graphRows, ncol=graphCols, common.legend = TRUE, legend="bottom")
+```
+
+## **2018**
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8}
+
+
+pie.trt.2018<-lapply(levels(dataDF$eligible), function(x) myPieChart2(dataDF %>% dplyr::filter(Year_of_diagnosis=="2018") %>% droplevels(), "First-line treatments",filterVar="eligible",filterSel=x,"First Line Treatment",fontSize = 1.4,fillPal = myfillPal))
+
+n<-length(pie.trt.2018);
+graphCols <-ceiling(n/floor(sqrt(n)));
+graphRows<-floor(sqrt(n))
+ggarrange(plotlist = pie.trt.2018,nrow=graphRows, ncol=graphCols, common.legend = TRUE, legend="bottom")
+
+```
+
+# Patients treated
+
+```{r ,warning=F, message=F,eval=TRUE}
+dataDF$treated %>% table() %>% prop.table() *100
+
+
+
+table(dataDF %>% dplyr::filter(Year_of_diagnosis==2012) %>% droplevels() %>% pull(treated)) %>% prop.table() * 100
+
+table(dataDF %>% dplyr::filter(Year_of_diagnosis==2018) %>% droplevels() %>% pull(treated)) %>% prop.table() * 100
+
+```
+
+
+# BASELINE CHARACTERISTICS TABLES {.tabset .tabset-fade .tabset-pills}
+
+Tables produced are saved automatically in the output tables folder, as word files.
+
+
+```{r ,warning=F, message=F,eval=TRUE}
+
+dataDF.fin <- dataDF %>%
+  dplyr::select(-treated,-`Age categories`) %>% droplevels()
+
+dataDF.fin.16.18 <- dataDF.fin %>% dplyr::filter(Year_of_diagnosis %in% c(2016,2018)) %>% droplevels()
+
+dataDF.el <- dataDF.fin %>% dplyr::filter(eligible=="trial-like") %>% droplevels()
+dataDF.nonel <- dataDF %>% dplyr::filter(eligible=="trial-excluded") %>% droplevels()
+
+
+sect_properties <- prop_section(
+  page_size = page_size(orient = "landscape",
+    width = 8.3, height = 13.7),
+  type = "continuous",
+  page_margins = page_mar()
+)
+
+```
+
+## SUPP TABLE 2: Baseline characteristics and first line treatments of the overall study population
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8}
+reset_gtsummary_theme()
+theme_gtsummary_journal(journal = "jama")
+baseChar.table <- dataDF.fin %>% dplyr::select(-Months_to_death_or_last_seen, -Dead_or_alive)  %>% as_tibble() %>% # forcats::fct_explicit_na(dataDF$Season) %>%
+            tbl_summary(by = `Year_of_diagnosis`,
+                        missing = "ifany",
+                        missing_text = "Not reported"
+                        ) %>%
+            add_p(pvalue_fun = fmt_pvalue_with_stars, 
+                  test=list(all_continuous() ~ "t.test", 
+                            all_categorical() ~ "fisher.test")) |>
+  add_q(pvalue_fun = fmt_pvalue_with_stars,
+        method = "fdr") |>
+  bold_labels() |> 
+  italicize_levels() |> 
+  bold_p(t = 0.05,q =TRUE)|>
+   modify_header(all_stat_cols() ~ "**Year {level}**\n(n = {n})", label="") # %>% add_overall() 
+baseChar.table
+
+baseChar.table %>%
+  modify_footnote(p.value ~ "*p<0.05; **p<0.01; ***p<0.001") %>% as_flex_table()  %>% fontsize(size=12, part="header") %>% fontsize(size=12, part="body") %>%
+                  font(font="Times New Roman", part="all") %>%
+  flextable::save_as_docx(path = paste0(tablesPath,"SUPP_TABLE_2.docx"),pr_section = sect_properties)
+```
+ 
+
+## TABLE 1: Baseline characteristics and first line treatments of “trial-like” and “trial-excluded” patients.
+
+```{r,war.ning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8}
+reset_gtsummary_theme()
+theme_gtsummary_journal(journal = "jama")
+
+# eligibBAse.table.v1 <- dataDF.fin %>% dplyr::select(-Months_to_death_or_last_seen, -Dead_or_alive)  %>% as_tibble() %>%
+#   tbl_strata(
+#     strata = Year_of_diagnosis,
+#     ~.x %>%
+#       tbl_summary(
+#         by = eligible,
+#                         missing = "ifany",
+#                         missing_text = "Not reported"
+#       ) |>
+#   bold_labels() |> 
+#       modify_header(all_stat_cols() ~ "**{level}**\n(n = {n})", label=""),
+#     .header = "**Year {strata}\n(n = {n})**"
+#   ) 
+# 
+# eligibBAse.table.v1
+# 
+# eligibBAse.table.v1 %>% as_flex_table() %>%
+#   flextable::save_as_docx(path = paste0(tablesPath,"TABLE_2.v1.docx"),pr_section = sect_properties)
+
+
+
+#########
+eligibBAse.table.v2 <- dataDF.fin %>% dplyr::select(-Months_to_death_or_last_seen, -Dead_or_alive)  %>% as_tibble() %>%
+  tbl_strata(
+    strata = eligible,
+    ~.x %>%
+      tbl_summary(
+        by = Year_of_diagnosis,
+                        missing = "ifany",
+                        missing_text = "Not reported"
+      )%>% 
+            add_p(pvalue_fun = fmt_pvalue_with_stars, 
+                  test=list(all_continuous() ~ "t.test", 
+                            all_categorical() ~ "fisher.test")) |>
+  add_q(pvalue_fun = fmt_pvalue_with_stars,
+        method = "fdr") |>
+  bold_labels() |> 
+  italicize_levels() |> 
+  bold_p(t = 0.05,q =TRUE)|>
+      modify_header(all_stat_cols() ~ "**Year {level}**\n(n = {n})", label=""),
+    .combine_with = "tbl_merge"#.header = "**{strata}**"
+  ) 
+eligibBAse.table.v2
+
+eligibBAse.table.v2 %>% as_flex_table()  %>% fontsize(size=12, part="header") %>% fontsize(size=12, part="body") %>%
+                  font(font="Times New Roman", part="all") %>%
+  flextable::save_as_docx(path = paste0(tablesPath,"TABLE_1.docx"),pr_section = sect_properties)
+
+
+```
+
+
+```{r,war.ning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8}
+
+eligibBAse.table.1618 <- dataDF.fin %>% dplyr::select(-Months_to_death_or_last_seen, -Dead_or_alive) %>% dplyr::filter(Year_of_diagnosis %in% c(2016,2018)) %>% droplevels() %>% as_tibble() %>%
+  tbl_strata(
+    strata = eligible,
+    ~.x %>%
+      tbl_summary(
+        by = Year_of_diagnosis,
+                        missing = "ifany",
+                        missing_text = "Not reported"
+      )%>% 
+            add_p(pvalue_fun = fmt_pvalue_with_stars, 
+                  test=list(all_continuous() ~ "t.test", 
+                            all_categorical() ~ "fisher.test")) |>
+  bold_labels()|> 
+      modify_header(all_stat_cols() ~ "**Year {level}**\n(n = {n})", label=""),
+    .combine_with = "tbl_merge"#.header = "**{strata}**"
+  ) 
+eligibBAse.table.1618
+
+
+
+```
+
+# FIG 1 {.tabset .tabset-fade .tabset-pills}
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=8, fig.height=6}
+
+xLabel="Years"
+yLabel="Percent Survival"
+grey_range <- colorRampPalette(c("black", "#CCCCCC"))
+
+```
+
+## FIG 1A: 2012 until 2018, overall {.tabset .tabset-fade .tabset-pills}
+
+### KM
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=8, fig.height=6}
+
+surv_all <-getKMplot2(DF = dataDF.fin,
+    timeColumn = surv_time,
+    eventColumn = surv_status,
+    byColumn = "Year_of_diagnosis",
+    xLabel = xLabel,
+    yLabel = yLabel,
+    timeUnit="months",
+    timeBreak=12,
+    addPHR=FALSE,
+    riskTab=TRUE,addMedian=TRUE,scaleX="m_y",xmax=132,tbX=139, legpos = c(.9,0.4))
+surv_all$km
+
+# cairo_pdf(filename = paste0(figuresPath,"/","Supp1",".pdf"),width = 8, height=6,family ="Palatino")
+#   print(surv_all$km)
+# dev.off()
+# 
+# 
+# ggsave(surv_all$km, filename = paste0(figuresPath,"/","Supp1",".tiff"), dpi = 600,width = 8, height=6,
+#        units = "in")
+```
+
+
+## FIG 1B {.tabset .tabset-fade .tabset-pills}
+
+### KM 
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=8, fig.height=6}
+dataDF.16.18 <- dataDF.fin %>% 
+                        dplyr::filter(Year_of_diagnosis %in% c(2016,2018)) %>%
+                        dplyr::filter(complete.cases(Year_of_diagnosis,`BRAF status`))
+dataDF.16.18$BRAF_YEAR <- paste0(dataDF.16.18$Year_of_diagnosis,"\nBRAF ",dataDF.16.18$`BRAF status`)
+dataDF.16.18$BRAF_YEAR <- factor(dataDF.16.18$BRAF_YEAR, levels=c("2016\nBRAF Wild-type",
+                                                                  "2016\nBRAF Mutant",
+                                                                  "2018\nBRAF Wild-type",
+                                                                  "2018\nBRAF Mutant"))
+
+
+
+dataDF.16.18$BRAF_YEAR <-fct_recode(dataDF.16.18$BRAF_YEAR, "2016 BRAF WT" = "2016\nBRAF Wild-type", "2016 BRAF MT" = "2016\nBRAF Mutant",
+           "2018 BRAF WT"="2018\nBRAF Wild-type", "2018 BRAF MT"="2018\nBRAF Mutant")
+
+dataDF.16.18$BRAF_YEAR <-fct_recode(dataDF.16.18$BRAF_YEAR, "2016 BWT" = "2016\nBRAF Wild-type", "2016 BMT" = "2016\nBRAF Mutant",
+           "2018 BWT"="2018\nBRAF Wild-type", "2018 BMT"="2018\nBRAF Mutant")
+
+
+surv_all.BRAF.16.18 <-getKMplot2(DF = dataDF.16.18,
+    timeColumn = surv_time,
+    eventColumn = surv_status,
+    byColumn = "BRAF_YEAR",
+    xLabel = xLabel,
+    yLabel = yLabel,
+    timeUnit="months",
+    timeBreak=12,
+    addPHR=FALSE,
+    riskTab=TRUE,addMedian=TRUE,scaleX="m_y",xmax=132,tbX=139, legpos = c(.9,0.4))
+surv_all.BRAF.16.18$km
+
+
+```
+
+
+
+## FIG 1 FINAL
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=11, fig.height=14}
+
+fig1 <-ggdraw() +
+  draw_plot(surv_all$km,x = 0.06, y = 0.5, width = 0.94, height = .5) +
+  draw_plot(surv_all.BRAF.16.18$km,x = 0, y = 0, width = 1, height = .5) +
+  draw_plot_label(label = c("A", "B"), size = 15,
+                  x = c(0, 0), y = c(1, .5))
+fig1
+
+
+cairo_pdf(filename = paste0(figuresPath,"/","Figure 1",".pdf"),width = 11, height=14,family ="Palatino")
+  print(fig1)
+dev.off()
+
+
+# ggsave(fig1 , filename = paste0(figuresPath,"/","Figure 1",".tiff"), dpi = 600,width = 11, height=14,
+#        units = "in")
+
+```
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=17, fig.height=9, eval=FALSE}
+
+fig1 <-ggdraw() +
+  draw_plot(surv_all$km,x = 0.06, y = 0, width = 0.44, height = 1) +
+  draw_plot(surv_all.BRAF.16.18$km,x = 0.5, y = 0, width = .5, height = 1) +
+  draw_plot_label(label = c("A", "B"), size = 15,
+                  x = c(0, .5), y = c(1, 1))
+fig1
+
+
+cairo_pdf(filename = paste0(figuresPath,"/","Fig1_hor",".pdf"),width = 17, height=9,family ="Palatino")
+  print(fig1)
+dev.off()
+
+
+ggsave(fig1 , filename = paste0(figuresPath,"/","Fig1_hor",".tiff"), dpi = 600,width = 17, height=9,
+       units = "in")
+
+```
+
+
+
+# FIG 2: Survival of trial like vs trial-excluded {.tabset .tabset-fade .tabset-pills}
+
+## FIG 2A: Trial-like {.tabset .tabset-fade .tabset-pills}
+
+### KM 
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=12, fig.height=6}
+
+surv_all.el <-getKMplot2(DF = dataDF.el,
+    timeColumn = surv_time,
+    eventColumn = surv_status,
+    byColumn = "Year_of_diagnosis",
+    xLabel = xLabel,
+    yLabel = yLabel,
+    timeUnit="months",
+    timeBreak=12,
+    addPHR=FALSE,
+    riskTab=TRUE,addMedian=TRUE,scaleX="m_y",xmax=132,tbX=139, legpos = c(.95,0.4))
+surv_all.el$km
+```
+
+
+
+## FIG 2B: Trial-excluded {.tabset .tabset-fade .tabset-pills}
+
+### KM
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=12, fig.height=6}
+
+# colnames(dataDF)[7] <- "BRAF_status"
+surv_all.nonel <-getKMplot2(DF = dataDF.nonel,
+    timeColumn = surv_time,
+    eventColumn = surv_status,
+    byColumn = "Year_of_diagnosis",
+    xLabel = xLabel,
+    yLabel = yLabel,
+    timeUnit="months",
+    timeBreak=12,
+    addPHR=FALSE,
+    riskTab=TRUE,addMedian=TRUE,scaleX="m_y",xmax=132,tbX=139, legpos = c(.95,0.4))
+surv_all.nonel$km
+```
+
+
+
+
+## FIG 2 FINAL
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=8, fig.height=12}
+fig2 <-ggarrange(plotlist = list(surv_all.el$km, surv_all.nonel$km), ncol=1,
+                 common.legend = FALSE, align="h",
+                 labels = c("A", "B"),
+                 font.label = list(size = 15, color = "black", face = "bold", family = "Palatino"))
+
+fig2
+
+cairo_pdf(filename = paste0(figuresPath,"/","Figure 2",".pdf"),width = 8, height=12,family ="Palatino")
+  print(fig2)
+dev.off()
+
+
+# ggsave(fig2, filename = paste0(figuresPath,"/","Figure 2",".tiff"), dpi = 600,width = 8, height=12,
+#        units = "in")
+
+```
+
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=13, fig.height=7, eval=FALSE}
+fig2 <-ggarrange(plotlist = list(surv_all.el$km, surv_all.nonel$km), ncol=2,
+                 common.legend = FALSE, align="h",
+                 labels = c("A", "B"),
+                 font.label = list(size = 15, color = "black", face = "bold", family = "Palatino"))
+
+fig2
+
+cairo_pdf(filename = paste0(figuresPath,"/","Fig2_hor",".pdf"),width = 13, height=7,family ="Palatino")
+  print(fig2)
+dev.off()
+
+
+ggsave(fig2, filename = paste0(figuresPath,"/","Fig2_hor",".tiff"), dpi = 600,width = 17, height=9,
+       units = "in")
+
+```
+
+# TABLE 2: Survival probabilities 1,2,3,4,5,10 yrs trial like, excluded
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8}
+surv_all.el$s_table$table_body$label[1] <- "Year of diagnosis"
+surv_all.nonel$s_table$table_body$label[1] <- "Year of diagnosis"
+
+reset_gtsummary_theme()
+theme_gtsummary_journal(journal = "jama")
+
+survPRob_stack <-
+  tbl_stack(list(surv_all.el$s_table, surv_all.nonel$s_table), group_header = c("Trial-like", "Trial-excluded"))
+
+survPRob_stack
+
+survPRob_stack %>% as_flex_table() %>% fontsize(size=12, part="header") %>% fontsize(size=12, part="body") %>%
+                  font(font="Times New Roman", part="all") %>%
+  flextable::save_as_docx(path = paste0(tablesPath,"TABLE_2.docx"),pr_section = sect_properties)
+```
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8, eval=FALSE}
+rate.tab.el <-surv_all.el$risk$data
+
+rate.tab.el <- rate.tab.el %>% dplyr::select(strata,time,n.risk, strata_size)
+rate.tab.el$`Survival rate` <- rate.tab.el$n.risk/rate.tab.el$strata_size
+rate.tab.el$`Survival rate` <- round(rate.tab.el$`Survival rate`,2) *100
+rate.tab.el$`Survival rate` <- ifelse(rate.tab.el$`Survival rate`==0,NA,rate.tab.el$`Survival rate`)
+rate.tab.el <-rate.tab.el %>% dplyr::select(strata,time,`Survival rate`)
+rate.tab.el.red <- rate.tab.el %>% dplyr::filter(time %in% c(12,24,36,48,60,120))
+
+rate.tab.el.f <-dcast(rate.tab.el.red, ... ~ time)
+colnames(rate.tab.el.f) <- c("Year of diagnosis", "1 yr","2 yr","3 yr","4 yr","5 yr","10 yr")
+
+ft.rate.tab.el.f <- flextable(rate.tab.el.f)
+
+ft.rate.tab.el.f  %>% flextable::fontsize(size=12, part="header") %>% fontsize(size=12, part="body") %>%
+                  font(font="Times New Roman", part="all") %>%
+  flextable::save_as_docx(path = paste0(tablesPath,"/","TABLE_3_RATES_ELIG.docx"),pr_section = sect_properties)
+
+
+ft.rate.tab.el.f  %>% flextable::fontsize(size=12, part="header") %>% fontsize(size=12, part="body") %>%
+                  font(font="Times New Roman", part="all")
+
+rate.tab.nonel <-surv_all.nonel$risk$data
+
+rate.tab.nonel <- rate.tab.nonel %>% dplyr::select(strata,time,n.risk, strata_size)
+rate.tab.nonel$`Survival rate` <- rate.tab.nonel$n.risk/rate.tab.nonel$strata_size
+rate.tab.nonel$`Survival rate` <- round(rate.tab.nonel$`Survival rate`,2) *100
+rate.tab.nonel$`Survival rate` <- ifelse(rate.tab.nonel$`Survival rate`==0,NA,rate.tab.nonel$`Survival rate`)
+rate.tab.nonel <-rate.tab.nonel %>% dplyr::select(strata,time,`Survival rate`)
+rate.tab.nonel.red <- rate.tab.nonel %>% dplyr::filter(time %in% c(12,24,36,48,60,120))
+
+rate.tab.nonel.f <-dcast(rate.tab.nonel.red, ... ~ time)
+colnames(rate.tab.nonel.f) <- c("Year of diagnosis", "1 yr","2 yr","3 yr","4 yr","5 yr","10 yr")
+
+ft.rate.tab.nonel.f <- flextable(rate.tab.nonel.f)
+
+ft.rate.tab.nonel.f  %>% flextable::fontsize(size=12, part="header") %>% fontsize(size=12, part="body") %>%
+                  font(font="Times New Roman", part="all") %>%
+  flextable::save_as_docx(path = paste0(tablesPath,"/","TABLE_2_RATES_NONELIG.docx"),pr_section = sect_properties)
+
+
+ft.rate.tab.nonel.f  %>% flextable::fontsize(size=12, part="header") %>% fontsize(size=12, part="body") %>%
+                  font(font="Times New Roman", part="all")
+```
+ 
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8, eval=FALSE}
+rate.tab.el <-surv_all.el$risk$data
+
+rate.tab.el <- rate.tab.el %>% dplyr::select(strata,time,n.risk, strata_size)
+rate.tab.el$`Survival rate` <- rate.tab.el$n.risk/rate.tab.el$strata_size
+rate.tab.el$`Survival rate` <- round(rate.tab.el$`Survival rate`,2) *100
+rate.tab.el$`Survival rate` <- ifelse(rate.tab.el$`Survival rate`==0,NA,rate.tab.el$`Survival rate`)
+rate.tab.el <-rate.tab.el %>% dplyr::select(strata,time,`Survival rate`)
+rate.tab.el.red <- rate.tab.el %>% dplyr::filter(time %in% c(12,24,36,48,60,120))
+
+rate.tab.el.f <-dcast(rate.tab.el.red, ... ~ strata)
+# colnames(rate.tab.el.f) <- c("Year of diagnosis", "1 yr","2 yr","3 yr","4 yr","5 yr","10 yr")
+colnames(rate.tab.el.f)[1] <-"years"
+rate.tab.el.f$years <- c(1,2,3,4,5,10)
+
+ft.rate.tab.el.f <- flextable(rate.tab.el.f)
+
+ft.rate.tab.el.f  %>% flextable::fontsize(size=12, part="header") %>% fontsize(size=12, part="body") %>%
+                  font(font="Times New Roman", part="all") %>%
+  flextable::save_as_docx(path = paste0(tablesPath,"/","TABLE_2_RATES_ELIG.v2.docx"),pr_section = sect_properties)
+
+
+ft.rate.tab.el.f  %>% flextable::fontsize(size=12, part="header") %>% fontsize(size=12, part="body") %>%
+                  font(font="Times New Roman", part="all")
+
+rate.tab.nonel <-surv_all.nonel$risk$data
+
+rate.tab.nonel <- rate.tab.nonel %>% dplyr::select(strata,time,n.risk, strata_size)
+rate.tab.nonel$`Survival rate` <- rate.tab.nonel$n.risk/rate.tab.nonel$strata_size
+rate.tab.nonel$`Survival rate` <- round(rate.tab.nonel$`Survival rate`,2) *100
+rate.tab.nonel$`Survival rate` <- ifelse(rate.tab.nonel$`Survival rate`==0,NA,rate.tab.nonel$`Survival rate`)
+rate.tab.nonel <-rate.tab.nonel %>% dplyr::select(strata,time,`Survival rate`)
+rate.tab.nonel.red <- rate.tab.nonel %>% dplyr::filter(time %in% c(12,24,36,48,60,120))
+
+rate.tab.nonel.f <-dcast(rate.tab.nonel.red, ... ~ strata)
+# colnames(rate.tab.nonel.f) <- c("Year of diagnosis", "1 yr","2 yr","3 yr","4 yr","5 yr","10 yr")
+colnames(rate.tab.nonel.f)[1] <-"years"
+rate.tab.nonel.f$years <- c(1,2,3,4,5,10)
+
+ft.rate.tab.nonel.f <- flextable(rate.tab.nonel.f)
+
+ft.rate.tab.nonel.f  %>% flextable::fontsize(size=12, part="header") %>% fontsize(size=12, part="body") %>%
+                  font(font="Times New Roman", part="all") %>%
+  flextable::save_as_docx(path = paste0(tablesPath,"/","TABLE_2_RATES_NONELIG.v2.docx"),pr_section = sect_properties)
+
+
+ft.rate.tab.nonel.f  %>% flextable::fontsize(size=12, part="header") %>% fontsize(size=12, part="body") %>%
+                  font(font="Times New Roman", part="all")
+```
+
+# BRAF WT eligible {.tabset .tabset-fade .tabset-pills}
+
+## KM
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=12, fig.height=6}
+dataDF.braf.wt.el <-dataDF.el  %>%
+                              dplyr::filter(`BRAF status`=="Wild-type")
+surv_all.el.BRAF.wt <-getKMplot2(DF = dataDF.braf.wt.el,
+    timeColumn = surv_time,
+    eventColumn = surv_status,
+    byColumn = "Year_of_diagnosis",
+    xLabel = xLabel,
+    yLabel = yLabel,
+    timeUnit="months",
+    timeBreak=12,
+    addPHR=FALSE,
+    riskTab=TRUE,addMedian=TRUE,scaleX="m_y",xmax=132,tbX=139, legpos = c(.95,0.4))
+surv_all.el.BRAF.wt$km
+
+
+# cairo_pdf(filename = paste0(figuresPath,"/","Supplementary Figure 3",".pdf"),width = 8, height=6,family ="Palatino")
+#   print(surv_all.el.BRAF.wt$km)
+# dev.off()
+# 
+# 
+# ggsave(surv_all.el.BRAF.wt$km, filename = paste0(figuresPath,"/","Supplementary Figure 3",".tiff"), dpi = 600,width = 8, height=6,
+#        units = "in")
+```
+
+
+
+# Comorbidities {.tabset .tabset-fade .tabset-pills}
+
+## Full population {.tabset .tabset-fade .tabset-pills}
+### KM
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=8, fig.height=6}
+
+surv_comorb <-getKMplot2(DF = dataDF.fin,
+    timeColumn = surv_time,
+    eventColumn = surv_status,
+    byColumn = "Comorbidities",
+    xLabel = xLabel,
+    yLabel = yLabel,
+    timeUnit="months",
+    timeBreak=12,
+    addPHR=FALSE,
+    riskTab=TRUE,addMedian=TRUE,scaleX="m_y",xmax=132,tbX=139)
+surv_comorb$km
+
+# cairo_pdf(filename = paste0(figuresPath,"/","Supp1",".pdf"),width = 8, height=6,family ="Palatino")
+#   print(surv_all$km)
+# dev.off()
+# 
+# 
+# ggsave(surv_all$km, filename = paste0(figuresPath,"/","Supp1",".tiff"), dpi = 600,width = 8, height=6,
+#        units = "in")
+```
+
+
+
+
+## 2016-2018 population {.tabset .tabset-fade .tabset-pills}
+### KM
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=8, fig.height=6}
+
+surv_comorb <-getKMplot2(DF = dataDF.fin.16.18,
+    timeColumn = surv_time,
+    eventColumn = surv_status,
+    byColumn = "Comorbidities",
+    xLabel = xLabel,
+    yLabel = yLabel,
+    timeUnit="months",
+    timeBreak=12,
+    addPHR=FALSE,
+    riskTab=TRUE,addMedian=TRUE,scaleX="m_y",xmax=122,tbX=127)
+surv_comorb$km
+
+# cairo_pdf(filename = paste0(figuresPath,"/","Supp1",".pdf"),width = 8, height=6,family ="Palatino")
+#   print(surv_all$km)
+# dev.off()
+# 
+# 
+# ggsave(surv_all$km, filename = paste0(figuresPath,"/","Supp1",".tiff"), dpi = 600,width = 8, height=6,
+#        units = "in")
+```
+
+
+
+# Autoimmunity {.tabset .tabset-fade .tabset-pills}
+
+## Full population {.tabset .tabset-fade .tabset-pills}
+### KM
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=8, fig.height=6}
+
+surv_autoim.f <-getKMplot2(DF = dataDF.fin,
+    timeColumn = surv_time,
+    eventColumn = surv_status,
+    byColumn = "Autoimmunity",
+    xLabel = xLabel,
+    yLabel = yLabel,
+    timeUnit="months",
+    timeBreak=12,
+    addPHR=FALSE,
+    riskTab=TRUE,addMedian=TRUE,scaleX="m_y",xmax=132,tbX=139, addLegend =TRUE, LegLabel="Autoimmunity", legpos = c(.95,0.4))
+surv_autoim.f$km
+
+# cairo_pdf(filename = paste0(figuresPath,"/","Supp1",".pdf"),width = 8, height=6,family ="Palatino")
+#   print(surv_all$km)
+# dev.off()
+# 
+# 
+# ggsave(surv_all$km, filename = paste0(figuresPath,"/","Supp1",".tiff"), dpi = 600,width = 8, height=6,
+#        units = "in")
+```
+
+
+
+
+## 2016-2018 population {.tabset .tabset-fade .tabset-pills}
+### KM
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=8, fig.height=6}
+
+surv_autoim <-getKMplot2(DF = dataDF.fin.16.18,
+    timeColumn = surv_time,
+    eventColumn = surv_status,
+    byColumn = "Autoimmunity",
+    xLabel = xLabel,
+    yLabel = yLabel,
+    timeUnit="months",
+    timeBreak=12,
+    addPHR=FALSE,
+    riskTab=TRUE,addMedian=TRUE,scaleX="m_y",xmax=132,tbX=139, legpos = c(.95,0.4))
+surv_autoim$km
+
+# cairo_pdf(filename = paste0(figuresPath,"/","Supp1",".pdf"),width = 8, height=6,family ="Palatino")
+#   print(surv_all$km)
+# dev.off()
+# 
+# 
+# ggsave(surv_all$km, filename = paste0(figuresPath,"/","Supp1",".tiff"), dpi = 600,width = 8, height=6,
+#        units = "in")
+```
+
+
+
+# SUPP FIG 2 {.tabset .tabset-fade .tabset-pills}
+
+## KM
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=8, fig.height=12}
+supp3<-ggdraw() +
+  draw_plot(surv_autoim.f$km,x = 0, y = 0.5, width = .99, height = .5) +
+  draw_plot(surv_all.el.BRAF.wt$km,x = 0, y = 0, width = .98, height = .5) +
+  draw_plot_label(label = c("A", "B"), size = 15,
+                  x = c(0, 0), y = c(1, .5))
+supp3
+cairo_pdf(filename = paste0(figuresPath,"/","Supplementary Figure 2",".pdf"),width = 8, height=12,family ="Palatino")
+  print(supp3)
+dev.off()
+
+
+# ggsave(supp3, filename = paste0(figuresPath,"/","Supplementary Figure 2",".tiff"), dpi = 600,width = 8, height=12,
+#        units = "in")
+```
+
+# HR summary TABLES {.tabset .tabset-fade .tabset-pills}
+
+## SUPP TABLE 3
+```{r,war.ning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8}
+reset_gtsummary_theme()
+# theme_gtsummary_journal(journal = "jama")
+theme_gtsummary_compact()
+tbl <-sapply(1:length(c("2012", "2014", "2016", "2018")) , function(x) coxph(paste0("Surv(",surv_time,", ",surv_status,") ~ ","Year_of_diagnosis") %>% as.formula(),data=dataDF.fin %>% mutate(Year_of_diagnosis=fct_relevel(Year_of_diagnosis,c("2012", "2014", "2016", "2018")[x]))) %>% # build character formula
+  gtsummary::tbl_regression(exp = TRUE, list(Year_of_diagnosis ~"Year of diagnosis")) |>
+  # add_q(method = "fdr") |>
+  bold_labels() |> 
+  italicize_levels() |> 
+  bold_p(t = 0.05,q =FALSE) |>
+  modify_header(label = ""), simplify=FALSE)%>%
+  # merge tables into single table
+  tbl_merge(
+    tab_spanner = c("**2012**", "**2014**","**2016**", "**2018**")
+  )
+
+reset_gtsummary_theme()
+# theme_gtsummary_journal(journal = "jama")
+theme_gtsummary_compact()
+# tbl #%>% as_flex_table()
+
+
+tbl_1a <-sapply(1:length(c("2012", "2014", "2016")) , function(x) coxph(paste0("Surv(",surv_time,", ",surv_status,") ~ ","Year_of_diagnosis") %>% as.formula(),data=dataDF.fin %>% mutate(Year_of_diagnosis=fct_relevel(Year_of_diagnosis,c("2012", "2014", "2016", "2018")[x]))) %>% # build character formula
+  gtsummary::tbl_regression(exp = TRUE, list(Year_of_diagnosis ~"Year of diagnosis")) |>
+  # add_q(method = "fdr") |>
+  bold_labels() |> 
+  italicize_levels() |> 
+  bold_p(t = 0.05,q =FALSE) |>
+  modify_header(label = ""), simplify=FALSE)%>%
+  # merge tables into single table
+  tbl_merge(
+    tab_spanner = c("**2012**", "**2014**","**2016**")
+  )
+tbl_1a
+```
+
+## SUPP TABLE 4
+
+```{r,war.ning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8}
+
+reset_gtsummary_theme()
+theme_gtsummary_journal(journal = "jama")
+
+
+tbl.braf.16.18 <-sapply(1:length(c("2016 BRAF WT", "2016 BRAF MT", "2018 BRAF WT", "2018 BRAF MT")) , function(x) coxph(paste0("Surv(",surv_time,", ",surv_status,") ~ ","BRAF_YEAR") %>% as.formula(),data=dataDF.16.18 %>% mutate(BRAF_YEAR=fct_relevel(BRAF_YEAR,c("2016 BRAF WT", "2016 BRAF MT", "2018 BRAF WT", "2018 BRAF MT")[x]))) %>% # build character formula
+  gtsummary::tbl_regression(exp = TRUE, list(BRAF_YEAR ~"BRAF status - Year of diagnosis")) |>
+  # add_q(method = "fdr") |>
+  bold_labels() |> 
+  italicize_levels() |> 
+  bold_p(t = 0.05,q =FALSE)|>
+  modify_header(label = ""), simplify=FALSE)%>%
+  # merge tables into single table
+  tbl_merge(
+    tab_spanner = c("**2016\nBRAF Wild-type**", "**2016\nBRAF Mutant**","**2018\nBRAF Wild-type**", "**2018\nBRAF Mutant**")
+  )
+# tbl.braf.16.18
+
+
+tbl.braf.16.18.f <-sapply(1:length(c("2016 BRAF WT", "2016 BRAF MT", "2018 BRAF WT")) , function(x) coxph(paste0("Surv(",surv_time,", ",surv_status,") ~ ","BRAF_YEAR") %>% as.formula(),data=dataDF.16.18 %>% mutate(BRAF_YEAR=fct_relevel(BRAF_YEAR,c("2016 BRAF WT", "2016 BRAF MT", "2018 BRAF WT", "2018 BRAF MT")[x]))) %>% # build character formula
+  gtsummary::tbl_regression(exp = TRUE, list(BRAF_YEAR ~"BRAF status - Year of diagnosis")) |>
+  # add_q(method = "fdr") |>
+  bold_labels() |> 
+  italicize_levels() |> 
+  bold_p(t = 0.05,q =FALSE)|>
+  modify_header(label = ""), simplify=FALSE)%>%
+  # merge tables into single table
+  tbl_merge(
+    tab_spanner = c("**2016\nBRAF Wild-type**", "**2016\nBRAF Mutant**","**2018\nBRAF Wild-type**")
+  )
+tbl.braf.16.18.f
+```
+
+```{r,war.ning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8}
+
+
+
+tbl_1a %>% as_flex_table() %>% fontsize(size=12, part="header") %>% fontsize(size=12, part="body") %>%
+                  font(font="Times New Roman", part="all") %>%
+  flextable::save_as_docx(path = paste0(tablesPath,"/","SUPP_TABLE_3.docx"),pr_section = sect_properties)
+
+tbl.braf.16.18.f %>% as_flex_table() %>% fontsize(size=12, part="header") %>% fontsize(size=12, part="body") %>%
+                  font(font="Times New Roman", part="all") %>%
+  flextable::save_as_docx(path = paste0(tablesPath,"SUPP_TABLE_4.docx"),pr_section = sect_properties)
+
+```
+
+
+## SUPP TABLE 5
+
+```{r,war.ning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8}
+reset_gtsummary_theme()
+theme_gtsummary_journal(journal = "jama")
+
+
+tbl.elig <-sapply(1:length(c("2012", "2014", "2016")) , function(x) coxph(paste0("Surv(",surv_time,", ",surv_status,") ~ ","Year_of_diagnosis") %>% as.formula(),data=dataDF.el %>% mutate(Year_of_diagnosis=fct_relevel(Year_of_diagnosis,c("2012", "2014", "2016", "2018")[x]))) %>% # build character formula
+  gtsummary::tbl_regression(exp = TRUE, list(Year_of_diagnosis ~"Year of diagnosis")) |>
+  # add_q(method = "fdr") |>
+  bold_labels() |> 
+  italicize_levels() |> 
+  bold_p(t = 0.05,q =FALSE)|>
+  modify_header(label = ""), simplify=FALSE)%>%
+  # merge tables into single table
+  tbl_merge(
+    tab_spanner = c("**2012**", "**2014**", "**2016**")
+  )
+
+# tbl.elig
+```
+
+```{r,war.ning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8}
+reset_gtsummary_theme()
+theme_gtsummary_journal(journal = "jama")
+
+tbl.nonelig <-sapply(1:length(c("2012", "2014", "2016")) , function(x) coxph(paste0("Surv(",surv_time,", ",surv_status,") ~ ","Year_of_diagnosis") %>% as.formula(),data=dataDF.nonel %>% mutate(Year_of_diagnosis=fct_relevel(Year_of_diagnosis,c("2012", "2014", "2016", "2018")[x]))) %>% # build character formula
+  gtsummary::tbl_regression(exp = TRUE, list(Year_of_diagnosis ~"Year of diagnosis")) |>
+  # add_q(method = "fdr") |>
+  bold_labels() |> 
+  italicize_levels() |> 
+  bold_p(t = 0.05,q =FALSE)|>
+  modify_header(label = ""), simplify=FALSE)%>%
+  # merge tables into single table
+  tbl_merge(
+    tab_spanner = c("**2012**", "**2014**","**2016**")
+  )
+
+# tbl.nonelig
+
+```
+
+```{r,war.ning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8}
+
+
+
+elig_hr_stack <-tbl_stack(list(tbl.elig, tbl.nonelig), group_header = c("Trial-like", "Trial-excluded")) 
+elig_hr_stack
+
+
+elig_hr_stack %>% as_flex_table() %>% fontsize(size=12, part="header") %>% fontsize(size=12, part="body") %>%
+                  font(font="Times New Roman", part="all") %>%
+  flextable::save_as_docx(path = paste0(tablesPath,"SUPP_TABLE_5.docx"),pr_section = sect_properties)
+
+```
+
+# Other HR table summaries {.tabset .tabset-fade .tabset-pills}
+
+## BRAF WT trial-like
+
+```{r,war.ning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8}
+reset_gtsummary_theme()
+theme_gtsummary_journal(journal = "jama")
+
+tbl.braf.wt.el <-sapply(1:length(c("2012", "2014", "2016", "2018")) , function(x) coxph(paste0("Surv(",surv_time,", ",surv_status,") ~ ","Year_of_diagnosis") %>% as.formula(),data=dataDF.braf.wt.el %>% mutate(Year_of_diagnosis=fct_relevel(Year_of_diagnosis,c("2012", "2014", "2016", "2018")[x]))) %>% # build character formula
+  gtsummary::tbl_regression(exp = TRUE, list(Year_of_diagnosis ~"Year of diagnosis")) |>
+  # add_q(method = "fdr") |>
+  bold_labels() |> 
+  italicize_levels() |> 
+  bold_p(t = 0.05,q =FALSE)|>
+  modify_header(label = ""), simplify=FALSE)%>%
+  # merge tables into single table
+  tbl_merge(
+    tab_spanner = c("**2012**", "**2014**","**2016**", "**2018**")
+  )
+
+tbl.braf.wt.el
+```
+
+
+## Autoimmune full population
+```{r,war.ning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8, eval=TRUE}
+reset_gtsummary_theme()
+# theme_gtsummary_journal(journal = "jama")
+theme_gtsummary_compact()
+tbl <-sapply(1:length(c("Autoimmunity: no", "Autoimmunity: yes")) , function(x) coxph(paste0("Surv(",surv_time,", ",surv_status,") ~ ","Autoimmunity") %>% as.formula(),data=dataDF.fin %>% mutate(Autoimmunity=fct_relevel(Autoimmunity,c("no", "yes")[x]))) %>% # build character formula
+  gtsummary::tbl_regression(exp = TRUE, list(Autoimmunity ~"Autoimmunity")) |>
+  # add_q(method = "fdr") |>
+  bold_labels() |> 
+  italicize_levels() |> 
+  bold_p(t = 0.05,q =FALSE) |>
+  modify_header(label = ""), simplify=FALSE)%>%
+  # merge tables into single table
+  tbl_merge(
+    tab_spanner = c("**No**", "**Yes**")
+  )
+
+reset_gtsummary_theme()
+# theme_gtsummary_journal(journal = "jama")
+theme_gtsummary_compact()
+tbl #%>% as_flex_table()
+```
+
+## Autoimmune 2016-2018
+
+```{r,war.ning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8, eval=TRUE}
+reset_gtsummary_theme()
+# theme_gtsummary_journal(journal = "jama")
+theme_gtsummary_compact()
+tbl <-sapply(1:length(c("Autoimmunity: no", "Autoimmunity: yes")) , function(x) coxph(paste0("Surv(",surv_time,", ",surv_status,") ~ ","Autoimmunity") %>% as.formula(),data=dataDF.fin.16.18 %>% mutate(Autoimmunity=fct_relevel(Autoimmunity,c("no", "yes")[x]))) %>% # build character formula
+  gtsummary::tbl_regression(exp = TRUE, list(Autoimmunity ~"Autoimmunity")) |>
+  # add_q(method = "fdr") |>
+  bold_labels() |> 
+  italicize_levels() |> 
+  bold_p(t = 0.05,q =FALSE) |>
+  modify_header(label = ""), simplify=FALSE)%>%
+  # merge tables into single table
+  tbl_merge(
+    tab_spanner = c("**No**", "**Yes**")
+  )
+
+reset_gtsummary_theme()
+# theme_gtsummary_journal(journal = "jama")
+theme_gtsummary_compact()
+tbl #%>% as_flex_table()
+```
+
+# Comorbidities HR summary {.tabset .tabset-fade .tabset-pills}
+
+## Full population
+
+```{r,war.ning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8, eval=TRUE}
+reset_gtsummary_theme()
+# theme_gtsummary_journal(journal = "jama")
+theme_gtsummary_compact()
+tbl <-sapply(1:length(c("Comorbidities: no", "Comorbidities: yes")) , function(x) coxph(paste0("Surv(",surv_time,", ",surv_status,") ~ ","Comorbidities") %>% as.formula(),data=dataDF.fin %>% mutate(Comorbidities=fct_relevel(Comorbidities,c("no", "yes")[x]))) %>% # build character formula
+  gtsummary::tbl_regression(exp = TRUE, list(Comorbidities ~"Comorbidities")) |>
+  # add_q(method = "fdr") |>
+  bold_labels() |> 
+  italicize_levels() |> 
+  bold_p(t = 0.05,q =FALSE) |>
+  modify_header(label = ""), simplify=FALSE)%>%
+  # merge tables into single table
+  tbl_merge(
+    tab_spanner = c("**No**", "**Yes**")
+  )
+
+reset_gtsummary_theme()
+# theme_gtsummary_journal(journal = "jama")
+theme_gtsummary_compact()
+tbl #%>% as_flex_table()
+```
+
+##  2016-2018
+
+```{r,war.ning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8, eval=TRUE}
+reset_gtsummary_theme()
+# theme_gtsummary_journal(journal = "jama")
+theme_gtsummary_compact()
+tbl <-sapply(1:length(c("Comorbidities: no", "Comorbidities: yes")) , function(x) coxph(paste0("Surv(",surv_time,", ",surv_status,") ~ ","Comorbidities") %>% as.formula(),data=dataDF.fin.16.18 %>% mutate(Comorbidities=fct_relevel(Comorbidities,c("no", "yes")[x]))) %>% # build character formula
+  gtsummary::tbl_regression(exp = TRUE, list(Comorbidities ~"Comorbidities")) |>
+  # add_q(method = "fdr") |>
+  bold_labels() |> 
+  italicize_levels() |> 
+  bold_p(t = 0.05,q =FALSE) |>
+  modify_header(label = ""), simplify=FALSE)%>%
+  # merge tables into single table
+  tbl_merge(
+    tab_spanner = c("**No**", "**Yes**")
+  )
+
+reset_gtsummary_theme()
+# theme_gtsummary_journal(journal = "jama")
+theme_gtsummary_compact()
+tbl #%>% as_flex_table()
+```
+
+# Session info
+
+```{r,warning=F, message=F,eval=TRUE}
+session_info <- sessionInfo()
+writeLines(capture.output(session_info), paste0(sessionInfoPath,"descriptive_survival_analysis.txt"))
+
+sessionInfo()
+
+```

@@ -1,0 +1,1165 @@
+---
+title: "Sustained improved survival of patients with metastatic melanoma after the introduction of anti-PD-1-based therapies"
+subtitle: <center> Prognostic predictive model figures and tables </center>
+author: "Aimilia Schina"
+date: '`r paste("First created on May 2022. Updated on ", format(Sys.Date(), "%d %B %Y"))`'
+output:
+  html_document:
+    css: style.css
+    code_folding: hide
+    #smooth_scroll: yes
+    fig_caption: yes
+    #highlight: textmate
+    #theme: cerulean
+    #theme: simplex
+    toc: yes
+    toc_float:
+      collapsed: true
+      smooth_scroll: true
+    toc_depth: 6
+    number_sections: true
+    #df_print: paged
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = 'D:/BIOINF/PROJECTS/2_ANALYSES/18_GIT_PAPERS/RealMelanoma_antiPD1_based')
+```
+
+```{r,warning=F, message=F}
+# Clear R-workspace
+rm(list=ls(all=TRUE))
+
+## Close all graphic devices
+graphics.off()
+#####################
+### Load packages ###
+#####################
+library(pacman)
+
+pacman::p_load(extrafont,DT, dplyr,data.table, tibble,reshape2, ggplot2,hrbrthemes,ggpubr, RColorBrewer,readxl,survival,gtsummary,ggrepel,forcats,mosaic,stringr,plyr,rcompanion,rlang,tidytidbits, purrr, forestmodel,rms,riskRegression,magrittr,tidymodels,base.rms,dynpred,ezfun,formula.tools,GGally,dcurves,patchwork, survminer,str2str,VIM,mice,flextable,officer, prodlim)
+
+extrafont::loadfonts(device="win")
+windowsFonts(sans="Palatino Linotype")
+loadfonts(device="win")
+loadfonts(device="postscript")
+```
+
+```{r,warning=F, message=F}
+###########################
+### Main analysis paths ###
+###########################
+
+scriptsPath <- paste0("scripts/")
+scriptsFunctionsPath <- paste0(scriptsPath,"functions/")
+projectDataPath <- paste0("data/")
+projectOutDataPath <- paste0("output/data_files/")
+figuresPath <- paste0("output/figures/")
+tablesPath <- paste0("output/tables/")
+modelsPath <- paste0("output/models/")
+sessionInfoPath <- paste0("session_info/")
+
+
+##################################
+### LOAD SOURCE FUNCTIONS FILE ###
+##################################
+source(paste0(scriptsFunctionsPath,"generic_helper_functions.R"))
+source(paste0(scriptsFunctionsPath,"performance_measures_Cox_functions.R"))
+source(paste0(scriptsFunctionsPath,"visualization_functions.R"))
+source(paste0(scriptsFunctionsPath,"stdca.R"))
+source(paste0(scriptsFunctionsPath,"customtab.R"))
+
+#####################
+### File suffixes ###
+#####################
+Rdata.suffix <- ".RData"
+
+```
+
+
+# Data {.tabset .tabset-fade .tabset-pills}
+
+## Loading patient data
+
+Original dataframe is reduced to include only patients diagnosed in 2016 and 2018.
+
+```{r dataLoad,warning=F, message=F,eval=TRUE}
+# Loading data
+dataDF <- loadRData(paste0(projectOutDataPath,"realMel.DF.allCont",Rdata.suffix))
+dataDF.fix <-dataDF
+colnames(dataDF.fix) <- str_replace_all(str_replace_all(colnames(dataDF.fix)," ","_"),"-","_")
+
+dataDF.f <- dataDF.fix %>% dplyr::select(-eligible) %>% dplyr::filter(Year_of_diagnosis %in% c(2016,2018)) %>% droplevels()
+levels(dataDF.f$Gender) <- c("Male","Female")
+
+
+```
+
+## Preprocessing
+
+We remove treatments of no interest.
+```{r ,warning=F, message=F,eval=TRUE}
+
+treats=c("Anti-PD-1","Anti-PD-1 plus Anti-CTLA-4","BRAFi", "No treatment")
+
+
+colnames(dataDF.f)[11] <- "LDH"
+colnames(dataDF.f)[18] <- "LDH_level"
+dataDF.f <- dataDF.f %>% relocate(LDH, .after = LDH_level) %>% droplevels()
+dataDF.f <- dataDF.f %>% dplyr::filter(First_line_treatments %in% treats) %>% droplevels()
+
+
+
+```
+
+
+We will use the multiply imputed data (1000 imputations) (pooled in the sense that they are complete) for initial descriptive statistics, model diagnostics, interactions etc.
+
+Then we will use the imputed bootstrapped data for predicting survival times.
+
+Age and LDH will be kept as continuous variables, and explore possible transformations suitable.
+
+Data include patients that received:
+
+* no treatment
+* anti-PD-1
+* anti-PD-1 plus anti-CTLA-4
+* BRAF inhibitors
+
+```{r ,warning=F, message=F,eval=TRUE}
+data.all <- dataDF.f
+```
+
+## Features
+
+```{r,warning=F, message=F,eval=TRUE}
+## Define which columns include survival data
+OS_time <- c("Months_to_death_or_last_seen")
+OS_status <- c("Dead_or_alive")
+# PFS_time <- c("PFS FU MONTHS")
+# PFS_status <- c("PROGRESSED")
+## DEFINE IF YOU ARE DOING OS OR PFS
+surv_time <-OS_time
+surv_status <-OS_status
+surv_time_label <- "OS"
+# Set prediction horizons
+myHorizons = c(6,12,24,36,48)
+
+```
+
+Combine brain metastases with disease stage to one covariate.
+
+```{r,warning=F, message=F,eval=TRUE}
+data.all$Stage_Brain_mets <- paste(data.all$Disease_stage,"_",data.all$Brain_metastases) %>% str_remove_all(" ")
+# Create combined variable for Brain mets and disease stage (strata also for treatment)
+
+data.all$Stage_Brain_mets <- ifelse(data.all$Stage_Brain_mets=="M1c/M1d_yes", 
+                                                                              "M1c/M1d with BM",
+                                             ifelse(data.all$Stage_Brain_mets=="M1c/M1d_no",
+                                                    "M1c/M1d no BM",
+                                                    ifelse(data.all$Stage_Brain_mets=="III/M1a/M1b_no",
+                                                           "III/M1a/M1b",data.all$Stage_Brain_mets)))
+data.all$Stage_Brain_mets <- factor(data.all$Stage_Brain_mets,
+                                             levels=c("M1c/M1d with BM","M1c/M1d no BM","III/M1a/M1b"))
+
+data.all$STAGE <- as.factor(data.all$STAGE)
+```
+
+
+```{r,warning=F, message=F,eval=TRUE}
+# # Brain mets full
+# featuresIn.cn <-c("Gender","Age_at_1st_Treatment","BRAF status",
+#               "Stage_Brain_mets","LDH_level","Performance status","Steroids","Comorbidities","Autoimmunity","Other malignancies","First_line_treatments")
+# featuresIn.cn <- str_replace_all(str_replace_all(featuresIn.cn," ","_"),"-","_")
+# featuresInLabels.cn <- c("Gender","Age","BRAF status",
+#               "Disease stage and Brain metastases","LDH level","Performance status","Steroids","Comorbidities","Autoimmunity","Other malignancies","First line Treatment")
+# 
+# numeric_feats<- c("Age_at_1st_Treatment","LDH_level")
+# categ_feats <- setdiff(featuresIn.cn,numeric_feats)
+```
+
+## Final data
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=14, fig.height=8}
+
+# Fix original data column to not have issue when extracting knots
+colnames(data.all)[5]<- "Age_first_Treatment"
+```
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=14, fig.height=8}
+table(data.all$First_line_treatments)
+dim(data.all)
+table(data.all$Dead_or_alive)
+# 432/614 * 100
+```
+
+# Load results of internal validation and calibration
+
+Internal validation
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=14, fig.height=8}
+
+## Treatment strata, REDUCED
+resCox_MI_boot.strata.nointer_RED <-loadRData(paste0(modelsPath,"resCox_MI_boot.strata.nointer" ,"_RED",Rdata.suffix))
+resCox_MI_boot.strata.nointer.bw_RED<-loadRData(paste0(modelsPath,"resCox_MI_boot.strata.nointer.bw" ,"_RED",Rdata.suffix))
+
+```
+
+Internal calibration
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=14, fig.height=8}
+
+## Treatment strata, REDUCED
+res.cal.strat.nointer_RED <- loadRData(paste0(modelsPath,"res.cal.strat.nointer","_RED" ,Rdata.suffix))
+
+```
+
+Final models for net benefit
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=14, fig.height=8}
+finalModel_noInter<- loadRData(paste0(modelsPath,"finalModel_noInter","_RED" ,Rdata.suffix))
+
+```
+
+
+# Performance plots - MICE-compare internal {.tabset .tabset-fade .tabset-pills}
+
+## Treatment strata
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=6, fig.height=5}
+resCox_treat_red <- c(list(full=resCox_MI_boot.strata.nointer_RED$mice),
+                          list(parsimonious=resCox_MI_boot.strata.nointer.bw_RED$mice.bw))
+                     
+
+
+bootMI.scores_treat_red<-sapply(1:length(resCox_treat_red), function(x) postProcessing_scores(resCox_treat_red[[x]],modelName=names(resCox_treat_red)[x]), simplify=FALSE)
+
+bootMI.scores.merged_treat_red <- ldply(bootMI.scores_treat_red)
+
+plotMeasures_byTimeBoot(bootMI.scores.merged_treat_red, horizons=myHorizons,metric="brier",timesLabel="Months",palleteName="neutral",filterModels=NULL,scale=FALSE)
+
+plotMeasures_byTimeBoot(bootMI.scores.merged_treat_red, horizons=myHorizons,metric="ipa",timesLabel="Months",palleteName="neutral",filterModels=NULL,scale=FALSE)
+
+plotMeasures_byTimeBoot(bootMI.scores.merged_treat_red, horizons=myHorizons,metric="auc",timesLabel="Months",palleteName="neutral",filterModels=NULL,scale=FALSE)
+
+plotMeasures_byTimeBoot(bootMI.scores.merged_treat_red, horizons=myHorizons,metric="c",timesLabel="Months",palleteName="neutral",filterModels=NULL,scale=FALSE)
+
+```
+
+# Performance plots-mice: final selection{.tabset .tabset-fade .tabset-pills}
+## Treatment strata: full , no interactions
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=6, fig.height=5}
+resCox_treat_red <- c(list(full=resCox_MI_boot.strata.nointer_RED$mice))
+
+
+bootMI.scores<-sapply(1:length(resCox_treat_red), function(x) postProcessing_scores(resCox_treat_red[[x]],modelName=names(resCox_treat_red)[x]), simplify=FALSE)
+
+bootMI.scores.merged <- ldply(bootMI.scores)
+
+
+
+plotMeasures_byTimeBoot(bootMI.scores.merged, horizons=myHorizons,metric="brier",timesLabel="Months",palleteName="neutral",filterModels=NULL,scale=FALSE)
+
+plotMeasures_byTimeBoot(bootMI.scores.merged, horizons=myHorizons,metric="ipa",timesLabel="Months",palleteName="neutral",filterModels=NULL,scale=TRUE)
+
+plotMeasures_byTimeBoot(bootMI.scores.merged, horizons=myHorizons,metric="auc",timesLabel="Months",palleteName="neutral",filterModels=NULL,scale=TRUE,vlines = c(6,12,24,36, 48))
+
+plotMeasures_byTimeBoot(bootMI.scores.merged, horizons=myHorizons,metric="c",timesLabel="Months",palleteName="neutral",filterModels=NULL,scale=FALSE)
+
+```
+
+## Treatment strata: BW, no interactions, 
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=6, fig.height=5}
+resCox_treat_red.bw <- c(list(parsimonious=resCox_MI_boot.strata.nointer.bw_RED$mice))
+
+
+bootMI.scores_treat_red.bw<-sapply(1:length(resCox_treat_red.bw), function(x) postProcessing_scores(resCox_treat_red.bw[[x]],modelName=names(resCox_treat_red.bw)[x]), simplify=FALSE)
+
+bootMI.scores.merged_treat_red.bw <- ldply(bootMI.scores_treat_red.bw)
+
+plotMeasures_byTimeBoot(bootMI.scores.merged_treat_red.bw, horizons=myHorizons,metric="brier",timesLabel="Months",palleteName="neutral",filterModels=NULL,scale=FALSE)
+
+plotMeasures_byTimeBoot(bootMI.scores.merged_treat_red.bw, horizons=myHorizons,metric="ipa",timesLabel="Months",palleteName="neutral",filterModels=NULL,scale=TRUE)
+
+plotMeasures_byTimeBoot(bootMI.scores.merged_treat_red.bw, horizons=myHorizons,metric="auc",timesLabel="Months",palleteName="neutral",filterModels=NULL,scale=TRUE,vlines = c(6,12,24,36, 48))
+
+plotMeasures_byTimeBoot(bootMI.scores.merged_treat_red.bw, horizons=myHorizons,metric="c",timesLabel="Months",palleteName="neutral",filterModels=NULL,scale=FALSE)
+
+```
+
+# Calibration plots final {.tabset .tabset-fade .tabset-pills}
+
+## Treatment strata, BW model
+
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=6, fig.height=5}
+cal.treat_strata.red.bw <-calibrationGGplot_TEST(calObj=res.cal.strat.nointer_RED$mice.bw$`48`$cal,optCorColor="Orange")
+cal.treat_strata.red.bw
+###############
+# calibrationGGplot_TEST(calObj=res.cal.strat.nointer_RED$mice.bw$`48`$cal,optCorColor="Orange")
+# 
+# calibrationGGplot_TEST(calObj=res.cal.strat.nointer_RED$mice$`48`$cal,optCorColor="Orange")
+
+###############
+cal.treat_strata.red.compl <-calibrationGGplot_TEST(calObj=res.cal.strat.nointer_RED$mice$`48`$cal,optCorColor="Orange")
+cal.treat_strata.red.compl
+```
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=6, fig.height=5}
+cal.treat_strata.red.bw <-calibrationGGplot(calObj=res.cal.strat.nointer_RED$mice.bw$`48`$cal,optCorColor="Orange")
+cal.treat_strata.red.bw
+
+calibrationGGplot(calObj=res.cal.strat.nointer_RED$mice$`48`$cal,optCorColor="Orange")
+```
+
+# Net benefit final
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=6, fig.height=5}
+# No BW
+netB.strata.nointer.nobw<- myDCA(data=finalModel_noInter$si_data, testdata=finalModel_noInter$si_data,
+      fitObj=finalModel_noInter$nobw, time=surv_time, status=surv_status,
+      manualCalc=F,
+      timePoint=48,
+      features=finalModel_noInter$feats_nobw.c,
+      predName="Complete_model")
+
+# With BW
+netB.strata.nointer.bw<- myDCA(data=finalModel_noInter$si_data, testdata=finalModel_noInter$si_data,
+      fitObj=finalModel_noInter$bw, time=surv_time, status=surv_status,
+      manualCalc=F,
+      timePoint=48,
+      features=finalModel_noInter$feats_bw.c,
+      predName="Parsimonious_model")
+
+netB.bw.plot<-myDCAggPlot(stdcaObj=netB.strata.nointer.bw,predictors="Parsimonious_model")
+netB.bw.plot
+
+# Plot both
+net_both <- cbind(netB.strata.nointer.bw$dcaPlot.data$net.benefit,netB.strata.nointer.nobw$dcaPlot.data$net.benefit %>% dplyr::select(Complete_model))
+netB.BOTH.plot<-myDCAggPlot_mult(stdcaObj=net_both,predictors=c("Parsimonious_model","Complete_model"))
+netB.BOTH.plot
+
+# DCA 6 mo
+netB.strata.nointer.nobw.6mo<- myDCA(data=finalModel_noInter$si_data, testdata=finalModel_noInter$si_data,
+      fitObj=finalModel_noInter$nobw, time=surv_time, status=surv_status,
+      manualCalc=F,
+      timePoint=6,
+      features=finalModel_noInter$feats_nobw.c,
+      predName="Complete_model")
+
+# With BW
+netB.strata.nointer.bw.6mo<- myDCA(data=finalModel_noInter$si_data, testdata=finalModel_noInter$si_data,
+      fitObj=finalModel_noInter$bw, time=surv_time, status=surv_status,
+      manualCalc=F,
+      timePoint=6,
+      features=finalModel_noInter$feats_bw.c,
+      predName="Parsimonious_model")
+net_both.6mo <- cbind(netB.strata.nointer.bw.6mo$dcaPlot.data$net.benefit,netB.strata.nointer.nobw.6mo$dcaPlot.data$net.benefit %>% dplyr::select(Complete_model))
+netB.BOTH.plot.6mo<-myDCAggPlot_mult(stdcaObj=net_both.6mo,predictors=c("Parsimonious_model","Complete_model"))
+netB.BOTH.plot.6mo
+# DCA 1 yr
+netB.strata.nointer.nobw.1yr<- myDCA(data=finalModel_noInter$si_data, testdata=finalModel_noInter$si_data,
+      fitObj=finalModel_noInter$nobw, time=surv_time, status=surv_status,
+      manualCalc=F,
+      timePoint=12,
+      features=finalModel_noInter$feats_nobw.c,
+      predName="Complete_model")
+
+# With BW
+netB.strata.nointer.bw.1yr<- myDCA(data=finalModel_noInter$si_data, testdata=finalModel_noInter$si_data,
+      fitObj=finalModel_noInter$bw, time=surv_time, status=surv_status,
+      manualCalc=F,
+      timePoint=12,
+      features=finalModel_noInter$feats_bw.c,
+      predName="Parsimonious_model")
+net_both.1yr <- cbind(netB.strata.nointer.bw.1yr$dcaPlot.data$net.benefit,netB.strata.nointer.nobw.1yr$dcaPlot.data$net.benefit %>% dplyr::select(Complete_model))
+netB.BOTH.plot.1yr<-myDCAggPlot_mult(stdcaObj=net_both.1yr,predictors=c("Parsimonious_model","Complete_model"))
+netB.BOTH.plot.1yr
+
+
+# DCA 2 yr
+netB.strata.nointer.nobw.2yr<- myDCA(data=finalModel_noInter$si_data, testdata=finalModel_noInter$si_data,
+      fitObj=finalModel_noInter$nobw, time=surv_time, status=surv_status,
+      manualCalc=F,
+      timePoint=24,
+      features=finalModel_noInter$feats_nobw.c,
+      predName="Complete_model")
+
+# With BW
+netB.strata.nointer.bw.2yr<- myDCA(data=finalModel_noInter$si_data, testdata=finalModel_noInter$si_data,
+      fitObj=finalModel_noInter$bw, time=surv_time, status=surv_status,
+      manualCalc=F,
+      timePoint=24,
+      features=finalModel_noInter$feats_bw.c,
+      predName="Parsimonious_model")
+net_both.2yr <- cbind(netB.strata.nointer.bw.2yr$dcaPlot.data$net.benefit,netB.strata.nointer.nobw.2yr$dcaPlot.data$net.benefit %>% dplyr::select(Complete_model))
+netB.BOTH.plot.2yr<-myDCAggPlot_mult(stdcaObj=net_both.2yr,predictors=c("Parsimonious_model","Complete_model"))
+netB.BOTH.plot.2yr
+
+
+
+# DCA 3 yr
+netB.strata.nointer.nobw.3yr<- myDCA(data=finalModel_noInter$si_data, testdata=finalModel_noInter$si_data,
+      fitObj=finalModel_noInter$nobw, time=surv_time, status=surv_status,
+      manualCalc=F,
+      timePoint=36,
+      features=finalModel_noInter$feats_nobw.c,
+      predName="Complete_model")
+
+# With BW
+netB.strata.nointer.bw.3yr<- myDCA(data=finalModel_noInter$si_data, testdata=finalModel_noInter$si_data,
+      fitObj=finalModel_noInter$bw, time=surv_time, status=surv_status,
+      manualCalc=F,
+      timePoint=36,
+      features=finalModel_noInter$feats_bw.c,
+      predName="Parsimonious_model")
+net_both.3yr <- cbind(netB.strata.nointer.bw.3yr$dcaPlot.data$net.benefit,netB.strata.nointer.nobw.3yr$dcaPlot.data$net.benefit %>% dplyr::select(Complete_model))
+netB.BOTH.plot.3yr<-myDCAggPlot_mult(stdcaObj=net_both.3yr,predictors=c("Parsimonious_model","Complete_model"))
+netB.BOTH.plot.3yr
+
+```
+
+# FIG 3
+
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=14, fig.height=10}
+
+ipa <- plotMeasures_byTimeBoot(bootMI.scores.merged_treat_red.bw, horizons=myHorizons,metric="ipa",timesLabel="Months",palleteName="neutral",filterModels=NULL,scale=TRUE)
+
+auc <- plotMeasures_byTimeBoot(bootMI.scores.merged_treat_red.bw, horizons=myHorizons,metric="auc",timesLabel="Months",palleteName="neutral",filterModels=NULL,scale=TRUE,vlines = c(6,12,24,36, 48))
+
+
+fig3 <- ggarrange(plotlist = list(ipa, auc,
+                                         cal.treat_strata.red.bw, netB.BOTH.plot),ncol = 2,nrow=2, common.legend = FALSE, labels = c("A", "B", "C", "D"),font.label = list(size = 14, color = "black", face = "bold", family = "Palatino"))
+
+fig3
+
+cairo_pdf(filename = paste0(figuresPath,"/","Figure 3",".pdf"),width = 14, height=10,family ="Palatino")
+  print(fig3)
+dev.off()
+
+# 
+# ggsave(fig3, filename = paste0(figuresPath,"/","Figure 3",".tiff"), dpi = 490,width = 14, height=10,
+#        units = "in")
+
+```
+
+
+# SUPPLEMENTARY mmc4 - MISSINGNESS ASSESSMENT
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=7}
+# pat.mis <-md.pattern(data.all %>% dplyr::select(-LDH,-Year_of_diagnosis,-Age_categories) %>% dplyr::rename("Immunosuppressive\nmedication"="Steroids") %>% dplyr::rename("CNS metastases"="Brain_metastases"), rotate.names = TRUE)
+
+
+data.Mis <- data.all %>% dplyr::select(-LDH,-Year_of_diagnosis,-Age_categories,-STAGE,-Stage_Brain_mets)
+colnames(data.Mis) <- data.all %>% dplyr::select(-LDH,-Year_of_diagnosis,-Age_categories,-STAGE,-Stage_Brain_mets) %>% names() %>% str_replace_all("_","\n") 
+colnames(data.Mis)[1] <- "Months"
+data.Mis <- data.Mis %>% dplyr::rename("Immuno-_suppressive_medication"="Steroids") %>% dplyr::rename("CNS_metastases"="Brain\nmetastases")
+aggr_plot <- aggr(data.Mis, col=c('navyblue','red'), numbers=TRUE, sortVars=TRUE, 
+                  labels=data.Mis %>% names() %>% str_replace_all("_","\n"), cex.axis=.6, gap=3, ylab=c("Histogram of missing data","Pattern"))
+
+cairo_pdf(filename = paste0(figuresPath,"/","Missingness Assessment",".pdf"),width = 15, height=7,family ="Palatino")
+  aggr(data.Mis, col=c('navyblue','red'), numbers=TRUE, sortVars=TRUE, 
+                  labels=data.Mis %>% names() %>% str_replace_all("_","\n"), cex.axis=.7, gap=3, ylab=c("Histogram of missing data","Pattern"))
+dev.off()
+
+
+```
+
+# SUPP FIG 1: COX PH assumptions
+
+```{r, warning=FALSE, echo=TRUE, eval=TRUE}
+######################
+# ORIGINAL FEATURES
+featuresIn.cn.orig <-c("Gender","Age_first_Treatment",
+              "Stage_Brain_mets","Steroids","Comorbidities","Autoimmunity","Other malignancies","Performance status","BRAF status","LDH_level","First_line_treatments")
+featuresIn.cn.orig <- str_replace_all(str_replace_all(featuresIn.cn.orig," ","_"),"-","_")
+featuresInLabels.cn.orig <- c("Gender","Age",
+              "Disease stage and Brain metastases","Steroids","Comorbidities","Autoimmunity","Other malignancies","Performance status","BRAF status","LDH level","First line Treatment")
+
+numeric_feats.orig<- c("Age_first_Treatment","LDH_level")
+categ_feats.orig <- setdiff(featuresIn.cn.orig,numeric_feats.orig)
+
+# FINAL FEATURES FOR MI/MODELLING
+featuresIn.cn <-c("Gender","Age_first_Treatment",
+              "Stage_Brain_mets","Steroids","Comorbidities","Autoimmunity","Other malignancies","Performance status","BRAF status","LDH_level.log","First_line_treatments")
+featuresIn.cn <- str_replace_all(str_replace_all(featuresIn.cn," ","_"),"-","_")
+
+numeric_feats<- c("Age_first_Treatment","LDH_level.log")
+categ_feats <- setdiff(featuresIn.cn,numeric_feats)
+# When I manually add rcs of age for MI with smcfcs
+numeric_feats.ext <- c(numeric_feats[1],"Age_first_Treatment_1",numeric_feats[2])
+```
+
+```{r, warning=FALSE, echo=TRUE, eval=TRUE}
+# First define  transformations in original data
+data.original <- data.all %>% dplyr::select(all_of(c(surv_time, surv_status,featuresIn.cn.orig))) %>% droplevels()
+# Create LDH log
+data.original.ext <- cbind(data.original, LDH_level.log=log(data.original$LDH_level))
+
+# Create complete data-extended version
+data.complete <- data.original.ext %>% dplyr::filter(complete.cases(.)) %>% droplevels()
+```
+
+```{r ,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=12, fig.height=10}
+feats2 <-makeComplexFormula(features=c(categ_feats,numeric_feats.ext[3]), 
+                   rcsFeats=c(numeric_feats.ext[1]), 
+                   knots=c(3), 
+                   interactions=NULL,
+                   strataFeats=NULL,
+                   rms=T)
+
+p2 <-plotExploreInteractions(features=feats2,data=data.complete, problematic=NULL,toRemove=NULL)
+
+# p2$plots
+
+```
+
+
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=10, fig.height=11}
+inters2 <- p2$combos[c(1,2,4,8,11,12,13,16,17,19,21,24,25,27,30,32,34,35,36,37,38,39,43,44,45,47,49,51,52,53,54,55)]
+
+featsInters2 <-makeComplexFormula(features=c(categ_feats,numeric_feats.ext[3]), 
+                   rcsFeats=c(numeric_feats.ext[1]), 
+                   knots=c(3), 
+                   interactions=inters2,
+                   strataFeats=NULL,
+                   rms=T)
+
+explorePH.inter.trans.strata.nointer=explorePH.inter.trans(data=data.complete, time=surv_time, status=surv_status, 
+                      features=feats2, inters=featsInters2)
+
+# explorePH.inter.trans.strata.nointer$model_stats
+# explorePH.inter.trans.strata.nointer$phtest.sign$nointer
+# explorePH.inter.trans.strata.nointer$anova.inter.res
+
+```
+
+```{r ,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=16, fig.height=16}
+supp1 <-explorePH.inter.trans.strata.nointer$ph.plots$nointer
+supp1$`3`<-supp1$`3` +labs(y="Beta(t) for\nImmunosuppressive\nmedications")
+
+supp1$`2` <- supp1$`2` +labs(y="Disease stage &\nCNS metastases")
+supp1$`10` <- supp1$`10` +labs(y="LDH level\n(log)")
+supp1$`11` <- supp1$`11` +labs(y="rcs(Age,3)")
+supp1$`6` <- supp1$`6` +labs(y="Other malignancies")
+supp1$`7` <- supp1$`7` +labs(y="Performance\nstatus")
+supp1$`8` <- supp1$`8` +labs(y="BRAF\nstatus")
+supp1$`9` <- supp1$`9` +labs(y="First-line\ntreatment")
+
+
+
+supp1
+cairo_pdf(filename = paste0(figuresPath,"/","Supplementary Figure 1",".pdf"),width = 16, height=14,family ="Palatino")
+  print(supp1)
+dev.off()
+
+# 
+# ggsave(print(supp1), filename = paste0(figuresPath,"/","Supp1_4YEARS",".tiff"), dpi = 490,width = 16, height=16,
+#        units = "in")
+```
+
+# SUPP FIG 3: patient flow chart
+
+Provided in output/figures folder, created with Visio.
+
+# SUPP FIG 4: Model stability for parsimonious model
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=6, fig.height=6}
+
+bif.df<- melt(resCox_MI_boot.strata.nointer.bw_RED$mice.bw$stability$bif_perc) %>% rownames_to_column(var="variable")
+bif.df$variable <- ifelse(bif.df$variable=="Steroids","Immunosuppressive\nmedications",bif.df$variable)
+bif.df$variable <- ifelse(bif.df$variable=="Stage_Brain_mets","Disease stage &\nCNS metastases",bif.df$variable)
+bif.df$variable <- ifelse(bif.df$variable=="LDH_level.log","LDH level\n(log)",bif.df$variable)
+bif.df$variable <- ifelse(bif.df$variable=="rcs(Age_first_Treatment,3)","rcs(Age,3)",bif.df$variable)
+
+
+bif.df$variable <- bif.df$variable %>% str_replace_all("_","\n")
+bif.df$variable <- factor(bif.df$variable, levels = bif.df$variable %>% rev())
+
+
+BIF.bar <-mybarplot(bif.df,xVar="variable",yVar="value",xLabel="Feature",yLabel="Bootstrap Inclusion Frequency in % (BIF)",facetVar=NULL,bootFreq=50)
+```
+
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=20, fig.height=8}
+# Models during validation with BW
+validation_stabModels <-resCox_MI_boot.strata.nointer.bw_RED$mice.bw$stability$model_stab %>%
+  dplyr::select(-freq)
+
+validation_stabModels$model <- paste0("M",1:nrow(validation_stabModels))
+
+validation_stabModels.DF <-validation_stabModels %>% pivot_longer(-c(bif_pat_perc,model),names_to = "predictor",values_to = "value")
+
+validation_stabModels.DF$predictor <- factor(validation_stabModels.DF$predictor,
+                                             levels=validation_stabModels.DF$predictor %>% unique() )
+
+validation_stabModels.DF$model <- factor(validation_stabModels.DF$model, levels=validation_stabModels.DF$model %>% unique() %>% rev())
+validation_stabModels.DF$value <- validation_stabModels.DF$value %>% factor()
+
+valid_plot <-myTileHeatPlot.2(DF=validation_stabModels.DF, xVar="predictor", yVar="model",xLabel="", yLabel="", labelVar=NULL, colorVar="value", facetVar = NULL )
+
+## FINAL MODEL
+# Final model with BW
+final_model.DF <- finalModel_noInter$pool_coxr.cox.nointer.bw$predictors_out %>% tail(n=1) %>% melt %>% dplyr::select(-Var1) %>% setNames(c("predictor","value")) %>% mutate(model="Final model")
+
+# Change 0 to 1 and 1 to zero, to have as 1 those included
+final_model.DF$value <- ifelse(final_model.DF$value==0,1,0)
+final_model.DF$predictor <- as.character(final_model.DF$predictor)
+final_model.DF$predictor <- ifelse(final_model.DF$predictor=="Steroids","Immunosuppressive\nmedications",final_model.DF$predictor)
+
+final_model.DF$predictor <- ifelse(final_model.DF$predictor=="Stage_Brain_mets","Disease stage &\nCNS metastases",final_model.DF$predictor)
+
+final_model.DF$predictor <- ifelse(final_model.DF$predictor=="LDH_level.log","LDH level\n(log)",final_model.DF$predictor)
+final_model.DF$predictor <- ifelse(final_model.DF$predictor=="rcs(Age_first_Treatment,3)","rcs(Age,3)",final_model.DF$predictor)
+
+
+final_model.DF$predictor <- final_model.DF$predictor %>% str_replace_all("_"," ")
+
+final_model.DF$predictor <- factor(final_model.DF$predictor,
+                                             levels=final_model.DF$predictor %>% unique() )
+
+final_model.DF$model <- factor(final_model.DF$model, levels=final_model.DF$model %>% unique() %>% rev())
+final_model.DF$value <- final_model.DF$value %>% factor()
+
+
+final_plot <-myTileHeatPlot.2(DF=final_model.DF, xVar="predictor", yVar="model",xLabel="", yLabel="", labelVar=NULL, colorVar="value", facetVar = NULL )
+
+```
+
+Validation models BIF
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=20, fig.height=8}
+# validation_stabModels.DF
+colnames(validation_stabModels.DF)[1] <- "BIF %"
+valid_BIF_plot <-myTileHeatPlot.2(DF=validation_stabModels.DF %>% dplyr::select(-predictor,-value) %>% melt(), 
+                 xVar="variable", 
+                 yVar="model",
+                 xLabel="", 
+                 yLabel="", 
+                 labelVar=NULL, 
+                 colorVar="value",
+                 colorCont = T, 
+                 facetVar = NULL,removeLegend=FALSE )
+
+validPlots_merged <-(valid_plot + theme(axis.text.y=element_blank()) | (valid_BIF_plot+ theme(axis.text.y=element_blank()))) + patchwork::plot_layout(widths = c(9,1))
+# validPlots_merged
+
+
+validPlots_merged2 <-((valid_plot+ theme(axis.text.x=element_blank(),
+                                         axis.text.y=element_blank())) | (valid_BIF_plot+ theme(axis.text.y=element_blank()))) + patchwork::plot_layout(widths = c(9,1))
+# validPlots_merged2
+```
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=20, fig.height=8}
+final_plot2 <- (final_plot + theme(axis.text=element_text(size=12,face="bold",angle = 25,vjust=1, hjust=-.02))+ patchwork::plot_spacer())+ patchwork::plot_layout(widths = c(8.9,1.1))
+
+bootModels.plot <-(final_plot2)/(validPlots_merged2) + patchwork::plot_layout(heights = c(1, 9))
+```
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=19, fig.height=8}
+
+supp4 <- BIF.bar + bootModels.plot + patchwork::plot_layout(widths = c(1.5, 8.5)) + plot_annotation(tag_levels = list(c("A","B"))) & 
+  theme(plot.tag = element_text(size = 14))
+supp4
+cairo_pdf(filename = paste0(figuresPath,"/","Supplementary Figure 4",".pdf"),width = 20, height=8,family ="Palatino")
+  print(supp4)
+dev.off()
+
+
+# ggsave(supp4, filename = paste0(figuresPath,"/","Supplementary Figure 4",".tiff"), dpi = 490,width = 20.5, height=8,
+#        units = "in")
+```
+
+# SUPP FIG 5: Calibration curves of the final parsimonious model for 6-month, 1-year (12 months), 2-year (24 months), and 3-year (36 months) OS
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=14, fig.height=8}
+
+cal.final.other <-sapply(c("6","12","24", "36"), function(x) calibrationGGplot(calObj=res.cal.strat.nointer_RED$mice.bw[[x]]$cal,optCorColor="Orange"), simplify=FALSE)
+# cal.treat_strata.red.bw
+
+# # Calibration for 42 months
+
+supp5 <- ggarrange(plotlist = cal.final.other,ncol = 2,nrow=2, common.legend = FALSE, labels = c("A", "B", "C","D"),font.label = list(size = 14, color = "black", face = "bold", family = "Palatino"))
+
+supp5
+
+cairo_pdf(filename = paste0(figuresPath,"/","Supplementary Figure 5",".pdf"),width = 14, height=10,family ="Palatino")
+  print(supp5)
+dev.off()
+
+# 
+# ggsave(supp5, filename = paste0(figuresPath,"/","Supplementary Figure 5",".tiff"), dpi = 490,width = 14, height=10,
+#        units = "in")
+```
+
+
+# SUPP FIG 6: Performance assessment of the complete prognostic model {.tabset .tabset-fade .tabset-pills}
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=14, fig.height=12}
+
+ipa <- plotMeasures_byTimeBoot(bootMI.scores.merged, horizons=myHorizons,metric="ipa",timesLabel="Months",palleteName="neutral",filterModels=NULL,scale=TRUE)
+
+auc <- plotMeasures_byTimeBoot(bootMI.scores.merged, horizons=myHorizons,metric="auc",timesLabel="Months",palleteName="neutral",filterModels=NULL,scale=TRUE,vlines = c(6,12,24,36, 48))
+cal.treat_strata.red.nointer <-calibrationGGplot(calObj=res.cal.strat.nointer_RED$mice$`48`$cal,optCorColor="Orange")
+
+# DCA
+
+netB.strata.nointer.nobw<- myDCA(data=finalModel_noInter$si_data, testdata=finalModel_noInter$si_data,
+      fitObj=finalModel_noInter$nobw, time=surv_time, status=surv_status,
+      manualCalc=F,
+      timePoint=48,
+      features=finalModel_noInter$feats_nobw.c,
+      predName="Full_model")
+
+netB.bw.nointer.plot<-myDCAggPlot(stdcaObj=netB.strata.nointer.nobw,predictors="Full_model")
+# netB.bw.nointer.plot
+
+
+# Calibration curves
+cal.final.other.NObw <-sapply(c("12","24","36"), function(x) calibrationGGplot(calObj=res.cal.strat.nointer_RED$mice[[x]]$cal,optCorColor="Orange"), simplify=FALSE)
+
+# Final figure
+supp6 <- (ipa + auc)/ (cal.final.other.NObw$`12` + cal.final.other.NObw$`24`) / (cal.final.other.NObw$`36` + cal.treat_strata.red.nointer) + plot_annotation(tag_levels = 'A')
+
+supp6
+
+cairo_pdf(filename = paste0(figuresPath,"/","Supplementary Figure 6",".pdf"),width = 13, height=15,family ="Palatino")
+  print(supp6)
+dev.off()
+
+# 
+# ggsave(supp6, filename = paste0(figuresPath,"/","Supplementary Figure 6",".tiff"), dpi = 490,width = 13, height=15,
+#        units = "in")
+
+
+```
+
+
+
+
+# SUPP FIG 7: Decision curve analysis for the parsimonious and complete prediction models of overall survival (OS) with (A) 1-year, (B) 2-year, and (C) 3-year survival probability
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=8, fig.height=13}
+supp7 <- netB.BOTH.plot.1yr / netB.BOTH.plot.2yr /netB.BOTH.plot.3yr + plot_annotation(tag_levels = 'A')
+
+supp7
+
+cairo_pdf(filename = paste0(figuresPath,"/","Supplementary Figure 7",".pdf"),width = 8, height=13,family ="Palatino")
+  print(supp7)
+dev.off()
+
+# 
+# ggsave(supp7, filename = paste0(figuresPath,"/","Supplementary Figure 7",".tiff"), dpi = 490,width = 8, height=13,
+#        units = "in")
+```
+
+
+# Median follow up -SI
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=14, fig.height=8}
+quantile(prodlim(Surv(time=Months_to_death_or_last_seen,event=Dead_or_alive)~1, data=finalModel_noInter$si_data, reverse = T))
+```
+
+# SUPP TABLE 1 :  Baseline characteristic data of model
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8}
+sect_properties <- prop_section(
+  page_size = page_size(orient = "landscape",
+    width = 8.3, height = 13.7),
+  type = "continuous",
+  page_margins = page_mar()
+)
+
+
+reset_gtsummary_theme()
+theme_gtsummary_journal(journal = "jama")
+
+
+
+baseChar.table <- data.all %>% dplyr::select(-Months_to_death_or_last_seen, -Dead_or_alive, -Age_categories,-LDH,-Year_of_diagnosis) %>% select(Gender, Age_first_Treatment, BRAF_status, First_line_treatments,
+                                                                                                                                                         Brain_metastases, Disease_stage, LDH_level,
+                                                                                                                                                         Performance_status, Steroids, Comorbidities,
+                                                                                                                                                         Autoimmunity, Other_malignancies) %>% setNames(c("Gender","Age at 1st Treatment","BRAF status","First-line treatments","CNS metastases","Disease stage","LDH level","Performance status", "Immunosuppressive\nmedications", "Comorbidities","Autoimmunity", "Other malignancies" ))  %>%  
+  mutate_if(is.factor, fct_explicit_na ) %>%
+  # mutate_all(fct_explicit_na )%>% 
+  as_tibble() %>%
+  tbl_summary(
+    type = all_continuous() ~ "continuous2",
+    missing = "no",
+    statistic = all_continuous() ~ c("{median} ({p25}, {p75})",
+                                     "{N_miss} ({p_miss}%)")
+  ) %>%
+  # udpating the Unknown label in the `.$table_body`
+  modify_table_body(
+    dplyr::mutate,
+    label = ifelse(label == "N missing (% missing)",
+                   "(Missing)",
+                   label)
+  ) |>
+  bold_labels() |> 
+  italicize_levels()
+baseChar.table
+baseChar.table %>% as_flex_table %>% 
+                  flextable::fontsize(size=12, part="header")  %>% 
+                  flextable::fontsize(size=12, part="body") %>% 
+                  font(font="Times New Roman", part="all") %>% flextable::save_as_docx(path = paste0(tablesPath,"/","SUPP_TABLE_1.docx"),pr_section = sect_properties)
+
+```
+
+
+# TABLE 3 :  Final parsimonious multivariable-stratified Cox regression prognostic model forprediction of overall survival of patients with MM
+
+
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=4, fig.height=4}
+
+model.present<-finalModel_noInter$pool_coxr.cox.nointer.bw$RR_model_final$`Step 4`
+m.terms <- finalModel_noInter$bw$terms
+m.terms.at <- attributes(m.terms)
+m.labels <- m.terms.at$term.labels
+m.labels.fixed <- c(m.labels[c(1,2,2,3:6)],"rcs(Age_first_Treatment, 3)Age_first_Treatment", "rcs(Age_first_Treatment, 3)Age_first_Treatment'")
+m.labels.nice <- c("Gender","Disease stage\n& CNS metastases", "Disease stage\n& CNS metastases","Immunosuppressive\nmedications",
+                    "Other malignancies",
+                   "Performance status", 
+                   "LDH level (log)", "Age", "Age'")
+model.present <- model.present %>% add_column(name=m.labels.fixed, .after = "term")
+patterns <- paste(m.labels.fixed, collapse = "|")
+term.value <- str_replace_all(model.present$term, pattern = patterns, replacement = "")
+term.value[8:9] <- c("","")
+
+model.present <- model.present %>% add_column(value=term.value, .after = "name")
+model.present <- model.present %>% add_column(label=m.labels.nice, .after = "name")
+
+coef.final.name <- ifelse(!is.empty(model.present$value),paste0(model.present$label, ": ",model.present$value),
+                          paste0(model.present$label))
+
+
+model.present <- model.present %>% add_column(coef=coef.final.name, .after = "value")
+
+# Main table will include beta coef, SE and pvalue
+model.present.final<- model.present %>% dplyr::select(coef, estimate, std.error,p.value)
+# model.present.final<- model.present.final %>% column_to_rownames(var="coef")
+model.present.final <- model.present.final %>% setNames(c("Variable","beta Coefficient", "SE", "P value"))
+# apply(model.present.final,2, round(digits=4))
+model.present.final$`beta Coefficient` <- round(model.present.final$`beta Coefficient`, digits = 5)
+model.present.final$SE <- round(model.present.final$SE, digits = 5)
+model.present.final$`P value` <- round(model.present.final$`P value`, digits = 4)
+model.present.final$`P value` <- ifelse(model.present.final$`P value`==0,"p < 0.0001",model.present.final$`P value`)
+
+
+ft.model <- flextable(model.present.final)
+
+# ft.model
+
+```
+
+Get baseline hazard for fixed time point, across the treatments
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=4, fig.height=4}
+
+base.haz.final <-getHazard(data=finalModel_noInter$si_data,
+    fitObj = finalModel_noInter$bw,
+    time=surv_time,
+    status=surv_status,
+    features =finalModel_noInter$feats_bw.c,
+    timePoint =c(12,24,36,48))
+
+base.haz.final.tb <- print(base.haz.final) %>% as.data.frame()  %>% dplyr::select(strata, times, survival)
+
+
+base.haz.final.tb$survival <- round(base.haz.final.tb$surviva,5)
+base.haz.final.tb$strata <- as.factor(base.haz.final.tb$strata)
+
+footer_baz <-paste0("S0(no treatment) = ",base.haz.final.tb$survival[1],", ",base.haz.final.tb$survival[2],", ",base.haz.final.tb$survival[3],", ",base.haz.final.tb$survival[4], " (1, 2, 3, 4-year survival baseline hazard function, no treatment)\n",
+       "S0(anti-PD-1) = ",base.haz.final.tb$survival[5],", ",base.haz.final.tb$survival[6],", ",base.haz.final.tb$survival[7],", ",base.haz.final.tb$survival[8], " (1, 2, 3, 4-survival baseline hazard function, Anti-PD-1 treatment)\n",
+       "S0(Anti-PD-1 plus Anti-CTLA-4) = ",base.haz.final.tb$survival[9],", ",base.haz.final.tb$survival[10],", ",base.haz.final.tb$survival[11],", ",base.haz.final.tb$survival[12], " (1, 2, 3, 4-survival baseline hazard function, Anti-PD-1 plus Anti-CTLA-4 treatment)\n",
+       "S0(BRAF-inhibitors based) = ",base.haz.final.tb$survival[13],", ",base.haz.final.tb$survival[14],", ",base.haz.final.tb$survival[15],", ",base.haz.final.tb$survival[16], " (1, 2, 3, 4-survival baseline hazard function, BRAF-inhibitors based treatments)\n")
+
+ft.model <- add_footer_lines(ft.model, footer_baz)
+
+ft.model
+ft.model %>% fontsize(size=12, part="header") %>% fontsize(size=12, part="body") %>%
+                  font(font="Times New Roman", part="all") %>% flextable::save_as_docx(path = paste0(tablesPath,"/","TABLE_3.docx"),pr_section = sect_properties)
+```
+
+
+# TABLE 4 :  Clinical example: Estimated 1,2,3-Year Survival of two 60-year-old male patients with varying clinical characteristics {.tabset .tabset-fade .tabset-pills}
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=4, fig.height=4}
+somData <- finalModel_noInter$si_data %>% dplyr::select(-nelsonaalen,-Age_first_Treatment_1)
+
+testData <-somData[605,] %>% dplyr::select(-First_line_treatments) 
+testData <- rbind(testData,testData,testData,testData,testData,testData)
+# Change LDh
+testData$LDH_level <- c(25,177,212,327,288,5000)
+testData$LDH_level.log <- log(testData$LDH_level)
+```
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=4, fig.height=4}
+# Load excel file with information
+patient_ex <- read_excel(paste0(projectDataPath,"Patienteksempler_070223.xlsx"))
+patient_ex <- as.data.frame(patient_ex)
+# Rename columns
+colnames(patient_ex) <- c("Patient_ID", "Gender", "Disease_stage","Brain_metastases",
+                          "Steroids", "Comorbidities","Autoimmunity", "Other_malignancies",
+                          "Performance_status.v1", "BRAF_status", "LDH_level",
+                          "Age_first_Treatment","First_line_treatments.v1")
+  
+# Fix Disease Stage and brain mets together
+patient_ex <- patient_ex %>% add_column(Disease_stage.v2= ifelse(patient_ex$Disease_stage %in% c("III","M1a","M1b"),"III/M1a/M1b",
+                          ifelse(patient_ex$Disease_stage %in% c("M1c","M1d"),"M1c/M1d",
+                                 patient_ex$Disease_stage)), .after ="Disease_stage" )
+# MAke merged Disease stage with brain mets
+patient_ex$Stage_Brain_mets <- paste(patient_ex$Disease_stage.v2,"_",patient_ex$Brain_metastases) %>% str_remove_all(" ")
+# Create combined variable for Brain mets and disease stage (strata also for treatment)
+
+patient_ex$Stage_Brain_mets  <- ifelse(patient_ex$Stage_Brain_mets =="M1c/M1d_yes", 
+                                                                              "M1c/M1d with BM",
+                                             ifelse(patient_ex$Stage_Brain_mets =="M1c/M1d_no",
+                                                    "M1c/M1d no BM",
+                                                    ifelse(patient_ex$Stage_Brain_mets =="III/M1a/M1b_no",
+                                                           "III/M1a/M1b",patient_ex$Stage_Brain_mets )))
+patient_ex$Stage_Brain_mets  <- factor(patient_ex$Stage_Brain_mets ,
+                                             levels=c("M1c/M1d with BM","M1c/M1d no BM","III/M1a/M1b"))
+
+# Fix performance status
+patient_ex <- patient_ex %>% add_column(Performance_status= ifelse(patient_ex$Performance_status.v1 %in% c(0,1), "0/1",
+                                     ifelse(patient_ex$Performance_status.v1 %in% c(2,3,4),"2/3/4",
+                                     ifelse(patient_ex$Performance_status.v1 %in% c(NA),NA,patient_ex$Performance_status.v1))), .after ="Performance_status.v1" )
+# Fix BRAF status
+patient_ex$BRAF_status <- dplyr::recode_factor(patient_ex$BRAF_status,mut="Mutant", wt="Wild-Type")
+# Fix first line treatments
+patient_ex$First_line_treatments <- ifelse(patient_ex$First_line_treatments.v1 %in% c("Pembrolizumab","KN 252 Pembro +/- Epacadostat", "Nivolumab PD-L1/IDO","Nivolumab","Pembro","pembro"), "Anti-PD-1",
+            ifelse(patient_ex$First_line_treatments.v1 %in% c("IFN/IL2"), "IFN/IL2",
+            ifelse(patient_ex$First_line_treatments.v1 %in% c("Ipilimumab","Ipilimumab (3vs10)","Ipilimumab-IDO"), "Anti-CTLA-4",
+            ifelse(patient_ex$First_line_treatments.v1 %in% c("Dabrafenib/Trametinib","Vemurafenib/Cobimetinib", "BRAF/MEK inhib","COMBI-V","BRAF/MEKi"), "BRAFi",
+            ifelse(patient_ex$First_line_treatments.v1 %in% c("Ipilimumab Nivolumab","BMS 511","BMS 511 Ipi(3)/Nivo(1) vs Ipi(1)/Nivo(3)"), "Anti-PD-1 plus Anti-CTLA-4",
+            ifelse(patient_ex$First_line_treatments.v1 %in% c("Temozolomid"), "Temozolomid",
+            ifelse(patient_ex$First_line_treatments.v1 %in% c("IL-2 intralesional"), "IL2 intralesional",
+            ifelse(patient_ex$First_line_treatments.v1 %in% c("","NULL", NA), "No treatment","Experimental Treatments"))))))))
+# LDH level log
+patient_ex$LDH_level.log <- log(patient_ex$LDH_level)
+
+# Fix Gender
+patient_ex$Gender <- dplyr::recode_factor(patient_ex$Gender,`M`="Male", `F`="Female")
+
+
+
+# ORder columns
+patient_ex <- patient_ex %>% dplyr::select(Patient_ID,Gender, Age_first_Treatment, Stage_Brain_mets,
+                                           Steroids, Comorbidities, Autoimmunity, Other_malignancies,
+                                           Performance_status, BRAF_status,
+                                           LDH_level, First_line_treatments,LDH_level.log,
+                                           Disease_stage,Performance_status.v1)
+```
+
+
+
+## Patient A
+
+Patient  with stage IV M1a MM, that did not receive baseline immunosuppressive medication, did not suffer from other malignancies, with varying performance status. Patient received anti-PD-1 as first-line
+treatment.
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8}
+
+
+testData1 <- rbind(patient_ex[1,],patient_ex[1,],patient_ex[1,])
+testData1$LDH_level <- c(162, 288, 580)
+testData1$LDH_level.log <- log(testData1$LDH_level)
+testData1$Age_first_Treatment <- c(60,60,60)
+#
+testData2 <- rbind(patient_ex[2,],patient_ex[2,],patient_ex[2,])
+testData2$LDH_level <- c(162, 288, 580)
+testData2$LDH_level.log <- log(testData2$LDH_level)
+testData2$Age_first_Treatment <- c(60,60,60)
+
+## PATIENT 1
+s1_year <-makeClinExample(data=somData, test=testData1 , model=finalModel_noInter$bw, time=surv_time, status=surv_status, 
+  calcPred=TRUE, horizon=myHorizons[c(2)], features=finalModel_noInter$feats_bw.c, Modname="MI_model", strataVar="First_line_treatments",
+  selectStrat="Anti-PD-1", colsRemove=c("Patient_ID", "Disease_stage","Gender", "Autoimmunity" , "Other_malignancies","BRAF_status",
+                "LDH_level.log","First_line_treatments","strata","times",
+                "Steroids","Performance_status","Stage_Brain_mets","Disease_stage","Comorbidities"),
+  finalColsName=c("Age", "LDH level", "PS","Estimated 1-Year Survival, % (CI)"), nRows = 3)
+
+s2_year <-makeClinExample(data=somData, test=testData1, model=finalModel_noInter$bw, time=surv_time, status=surv_status, 
+  calcPred=TRUE, horizon=myHorizons[c(3)], features=finalModel_noInter$feats_bw.c, Modname="MI_model", strata="First_line_treatments",
+  selectStrat="Anti-PD-1", colsRemove=c("Patient_ID", "Disease_stage","Gender", "Autoimmunity" , "Other_malignancies","BRAF_status",
+                "LDH_level.log","First_line_treatments","strata","times",
+                "Steroids","Performance_status","Stage_Brain_mets","Disease_stage","Comorbidities"),
+  finalColsName=c("Age", "LDH level", "PS","Estimated 2-Year Survival, % (CI)"), nRows = 3)
+
+s3_year <-makeClinExample(data=somData, test=testData1, model=finalModel_noInter$bw, time=surv_time, status=surv_status, 
+  calcPred=TRUE, horizon=myHorizons[c(4)], features=finalModel_noInter$feats_bw.c, Modname="MI_model", strata="First_line_treatments",
+  selectStrat="Anti-PD-1", colsRemove=c("Patient_ID", "Disease_stage","Gender", "Autoimmunity" , "Other_malignancies","BRAF_status",
+                "LDH_level.log","First_line_treatments","strata","times",
+                "Steroids","Performance_status","Stage_Brain_mets","Disease_stage","Comorbidities"),
+  finalColsName=c("Age", "LDH level", "PS","Estimated 3-Year Survival, % (CI)"), nRows = 3)
+
+s4_year <-makeClinExample(data=somData, test=testData1, model=finalModel_noInter$bw, time=surv_time, status=surv_status, 
+  calcPred=TRUE, horizon=myHorizons[c(5)], features=finalModel_noInter$feats_bw.c, Modname="MI_model", strata="First_line_treatments",
+  selectStrat="Anti-PD-1", colsRemove=c("Patient_ID", "Disease_stage","Gender", "Autoimmunity" , "Other_malignancies","BRAF_status",
+                "LDH_level.log","First_line_treatments","strata","times",
+                "Steroids","Performance_status","Stage_Brain_mets","Disease_stage","Comorbidities"),
+  finalColsName=c("Age", "LDH level", "PS","Estimated 4-Year Survival, % (CI)"), nRows = 3)
+# Merge tables
+clinExmple1 <- cbind(s1_year, s2_year %>% dplyr::select(`Estimated 2-Year Survival, % (CI)`), s3_year %>% dplyr::select(`Estimated 3-Year Survival, % (CI)`), s4_year %>% dplyr::select(`Estimated 4-Year Survival, % (CI)`))
+
+## PATIENT 2
+
+s1_year <-makeClinExample(data=somData, test=testData2 , model=finalModel_noInter$bw, time=surv_time, status=surv_status, 
+  calcPred=TRUE, horizon=myHorizons[c(2)], features=finalModel_noInter$feats_bw.c, Modname="MI_model", strataVar="First_line_treatments",
+  selectStrat="Anti-PD-1", colsRemove=c("Patient_ID", "Disease_stage","Gender", "Autoimmunity" , "Other_malignancies","BRAF_status",
+                "LDH_level.log","First_line_treatments","strata","times",
+                "Steroids","Performance_status","Stage_Brain_mets","Disease_stage","Comorbidities"),
+  finalColsName=c("Age", "LDH level", "PS","Estimated 1-Year Survival, % (CI)"), nRows = 3)
+
+s2_year <-makeClinExample(data=somData, test=testData2, model=finalModel_noInter$bw, time=surv_time, status=surv_status, 
+  calcPred=TRUE, horizon=myHorizons[c(3)], features=finalModel_noInter$feats_bw.c, Modname="MI_model", strata="First_line_treatments",
+  selectStrat="Anti-PD-1", colsRemove=c("Patient_ID", "Disease_stage","Gender", "Autoimmunity" , "Other_malignancies","BRAF_status",
+                "LDH_level.log","First_line_treatments","strata","times",
+                "Steroids","Performance_status","Stage_Brain_mets","Disease_stage","Comorbidities"),
+  finalColsName=c("Age", "LDH level", "PS","Estimated 2-Year Survival, % (CI)"), nRows = 3)
+
+s3_year <-makeClinExample(data=somData, test=testData2, model=finalModel_noInter$bw, time=surv_time, status=surv_status, 
+  calcPred=TRUE, horizon=myHorizons[c(4)], features=finalModel_noInter$feats_bw.c, Modname="MI_model", strata="First_line_treatments",
+  selectStrat="Anti-PD-1", colsRemove=c("Patient_ID", "Disease_stage","Gender", "Autoimmunity" , "Other_malignancies","BRAF_status",
+                "LDH_level.log","First_line_treatments","strata","times",
+                "Steroids","Performance_status","Stage_Brain_mets","Disease_stage","Comorbidities"),
+  finalColsName=c("Age", "LDH level", "PS","Estimated 3-Year Survival, % (CI)"), nRows = 3)
+
+s4_year <-makeClinExample(data=somData, test=testData2, model=finalModel_noInter$bw, time=surv_time, status=surv_status, 
+  calcPred=TRUE, horizon=myHorizons[c(5)], features=finalModel_noInter$feats_bw.c, Modname="MI_model", strata="First_line_treatments",
+  selectStrat="Anti-PD-1", colsRemove=c("Patient_ID", "Disease_stage","Gender", "Autoimmunity" , "Other_malignancies","BRAF_status",
+                "LDH_level.log","First_line_treatments","strata","times",
+                "Steroids","Performance_status","Stage_Brain_mets","Disease_stage","Comorbidities"),
+  finalColsName=c("Age", "LDH level", "PS","Estimated 4-Year Survival, % (CI)"), nRows = 3)
+# Merge tables
+clinExmple2 <- cbind(s1_year, s2_year %>% dplyr::select(`Estimated 2-Year Survival, % (CI)`), s3_year %>% dplyr::select(`Estimated 3-Year Survival, % (CI)`), s4_year %>% dplyr::select(`Estimated 4-Year Survival, % (CI)`))
+
+# Merge tables from patient 1 and 2
+clinExmple <- rbind(clinExmple1, clinExmple2)
+
+clinExmple.aPD1 <- clinExmple %>% dplyr::select(PS, `LDH level`,
+                                           `Estimated 1-Year Survival, % (CI)`,
+                                           `Estimated 2-Year Survival, % (CI)`,
+                                           `Estimated 3-Year Survival, % (CI)`,
+                                           `Estimated 4-Year Survival, % (CI)`)
+
+ft.example.aPD1 <- flextable(clinExmple.aPD1)
+ft.example.aPD1
+
+header_ex <-"Table 4A: Estimated 1,2,3,4-Year Survival of two 60-year old male patients, with M1a MM disease stage, that had not previously received steroids, and do not suffer from other malignancies. Patients received anti-PD-1 as first-line treatment."
+
+footer_ex <-"LDH = Lactate dehydrogenase\nCI=Confidence interval"
+
+
+ft.example.aPD1 %>% fontsize(size=12, part="header") %>% fontsize(size=12, part="body") %>%
+                  font(font="Times New Roman", part="all") %>% flextable::save_as_docx(path = paste0(tablesPath,"/","TABLE_4A.docx"),pr_section = sect_properties)
+```
+## Patient B
+
+Patient with stage M1d MM with CNS metastases, with a performance status of 0, who did not suffer from other malignancies, and either had or did not have baseline treatment with immunosuppressive medications. Patient received BRAF + MEK inhibitors as first-line treatment.
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8, eval=TRUE}
+
+testData1 <- rbind(patient_ex[5,],patient_ex[5,],patient_ex[5,])
+testData1$LDH_level <- c(162, 288, 580)
+testData1$LDH_level.log <- log(testData1$LDH_level)
+testData1$Age_first_Treatment <- c(60,60,60)
+#
+testData2 <- rbind(patient_ex[6,],patient_ex[6,],patient_ex[6,])
+testData2$LDH_level <- c(162, 288, 580)
+testData2$LDH_level.log <- log(testData2$LDH_level)
+testData2$Age_first_Treatment <- c(60,60,60)
+
+
+s1_year <-makeClinExample(data=somData, test=testData1 , model=finalModel_noInter$bw, time=surv_time, status=surv_status, 
+  calcPred=TRUE, horizon=myHorizons[c(2)], features=finalModel_noInter$feats_bw.c, Modname="MI_model", strataVar="First_line_treatments",
+  selectStrat="BRAFi", colsRemove=c("Patient_ID", "Disease_stage","Gender", "Autoimmunity" , "Other_malignancies","BRAF_status",
+                "LDH_level.log","First_line_treatments","strata","times",
+                "Performance_status","Performance_status.v1","Stage_Brain_mets","Disease_stage","Comorbidities"),
+  finalColsName=c("Age", "Steroids","LDH level", "Estimated 1-Year Survival, % (CI)"), nRows = 3)
+
+s2_year <-makeClinExample(data=somData, test=testData1, model=finalModel_noInter$bw, time=surv_time, status=surv_status, 
+  calcPred=TRUE, horizon=myHorizons[c(3)], features=finalModel_noInter$feats_bw.c, Modname="MI_model", strata="First_line_treatments",
+  selectStrat="BRAFi", colsRemove=c("Patient_ID", "Disease_stage","Gender", "Autoimmunity" , "Other_malignancies","BRAF_status",
+                "LDH_level.log","First_line_treatments","strata","times",
+                "Performance_status","Performance_status.v1","Stage_Brain_mets","Disease_stage","Comorbidities"),
+  finalColsName=c("Age", "Steroids","LDH level","Estimated 2-Year Survival, % (CI)"), nRows = 3)
+
+s3_year <-makeClinExample(data=somData, test=testData1, model=finalModel_noInter$bw, time=surv_time, status=surv_status, 
+  calcPred=TRUE, horizon=myHorizons[c(4)], features=finalModel_noInter$feats_bw.c, Modname="MI_model", strata="First_line_treatments",
+  selectStrat="BRAFi", colsRemove=c("Patient_ID", "Disease_stage","Gender", "Autoimmunity" , "Other_malignancies","BRAF_status",
+                "LDH_level.log","First_line_treatments","strata","times",
+                "Performance_status","Performance_status.v1","Stage_Brain_mets","Disease_stage","Comorbidities"),
+  finalColsName=c("Age", "Steroids","LDH level","Estimated 3-Year Survival, % (CI)"), nRows = 3)
+
+
+s4_year <-makeClinExample(data=somData, test=testData1, model=finalModel_noInter$bw, time=surv_time, status=surv_status, 
+  calcPred=TRUE, horizon=myHorizons[c(5)], features=finalModel_noInter$feats_bw.c, Modname="MI_model", strata="First_line_treatments",
+  selectStrat="BRAFi", colsRemove=c("Patient_ID", "Disease_stage","Gender", "Autoimmunity" , "Other_malignancies","BRAF_status",
+                "LDH_level.log","First_line_treatments","strata","times",
+                "Performance_status","Performance_status.v1","Stage_Brain_mets","Disease_stage","Comorbidities"),
+  finalColsName=c("Age", "Steroids","LDH level","Estimated 4-Year Survival, % (CI)"), nRows = 3)
+# Merge tables
+clinExmple1 <- cbind(s1_year, s2_year %>% dplyr::select(`Estimated 2-Year Survival, % (CI)`), s3_year %>% dplyr::select(`Estimated 3-Year Survival, % (CI)`), s4_year %>% dplyr::select(`Estimated 4-Year Survival, % (CI)`))
+
+
+s1_year <-makeClinExample(data=somData, test=testData2 , model=finalModel_noInter$bw, time=surv_time, status=surv_status, 
+  calcPred=TRUE, horizon=myHorizons[c(2)], features=finalModel_noInter$feats_bw.c, Modname="MI_model", strataVar="First_line_treatments",
+  selectStrat="BRAFi", colsRemove=c("Patient_ID", "Disease_stage","Gender", "Autoimmunity" , "Other_malignancies","BRAF_status",
+                "LDH_level.log","First_line_treatments","strata","times",
+                "Performance_status","Performance_status.v1","Stage_Brain_mets","Disease_stage","Comorbidities"),
+  finalColsName=c("Age", "Steroids","LDH level","Estimated 1-Year Survival, % (CI)"), nRows = 3)
+
+s2_year <-makeClinExample(data=somData, test=testData2, model=finalModel_noInter$bw, time=surv_time, status=surv_status, 
+  calcPred=TRUE, horizon=myHorizons[c(3)], features=finalModel_noInter$feats_bw.c, Modname="MI_model", strata="First_line_treatments",
+  selectStrat="BRAFi", colsRemove=c("Patient_ID", "Disease_stage","Gender", "Autoimmunity" , "Other_malignancies","BRAF_status",
+                "LDH_level.log","First_line_treatments","strata","times",
+                "Performance_status","Performance_status.v1","Stage_Brain_mets","Disease_stage","Comorbidities"),
+  finalColsName=c("Age", "Steroids","LDH level","Estimated 2-Year Survival, % (CI)"), nRows = 3)
+
+s3_year <-makeClinExample(data=somData, test=testData2, model=finalModel_noInter$bw, time=surv_time, status=surv_status, 
+  calcPred=TRUE, horizon=myHorizons[c(4)], features=finalModel_noInter$feats_bw.c, Modname="MI_model", strata="First_line_treatments",
+  selectStrat="BRAFi", colsRemove=c("Patient_ID", "Disease_stage","Gender", "Autoimmunity" , "Other_malignancies","BRAF_status",
+                "LDH_level.log","First_line_treatments","strata","times",
+                "Performance_status","Performance_status.v1","Stage_Brain_mets","Disease_stage","Comorbidities"),
+  finalColsName=c("Age", "Steroids","LDH level","Estimated 3-Year Survival, % (CI)"), nRows = 3)
+
+s4_year <-makeClinExample(data=somData, test=testData2, model=finalModel_noInter$bw, time=surv_time, status=surv_status, 
+  calcPred=TRUE, horizon=myHorizons[c(5)], features=finalModel_noInter$feats_bw.c, Modname="MI_model", strata="First_line_treatments",
+  selectStrat="BRAFi", colsRemove=c("Patient_ID", "Disease_stage","Gender", "Autoimmunity" , "Other_malignancies","BRAF_status",
+                "LDH_level.log","First_line_treatments","strata","times",
+                "Performance_status","Performance_status.v1","Stage_Brain_mets","Disease_stage","Comorbidities"),
+  finalColsName=c("Age", "Steroids","LDH level","Estimated 4-Year Survival, % (CI)"), nRows = 3)
+# Merge tables
+clinExmple2 <- cbind(s1_year, s2_year %>% dplyr::select(`Estimated 2-Year Survival, % (CI)`), s3_year %>% dplyr::select(`Estimated 3-Year Survival, % (CI)`), s4_year %>% dplyr::select(`Estimated 4-Year Survival, % (CI)`))
+```
+
+```{r,warning=F, message=F,fig.show = 'hold', fig.width=15, fig.height=8}
+
+# Merge tables from patient 1 and 2
+clinExmple <- rbind(clinExmple1, clinExmple2)
+
+clinExmple.braf <- clinExmple %>% dplyr::select(Steroids, `LDH level`,
+                                           `Estimated 1-Year Survival, % (CI)`,
+                                           `Estimated 2-Year Survival, % (CI)`,
+                                           `Estimated 3-Year Survival, % (CI)`,
+                                           `Estimated 4-Year Survival, % (CI)`)
+
+colnames(clinExmple.braf)[1] <- "Immuno-suppressive medications"
+ft.example.braf <- flextable(clinExmple.braf)
+ft.example.braf
+
+ft.example.braf %>% fontsize(size=12, part="header") %>% fontsize(size=12, part="body") %>%
+                  font(font="Times New Roman", part="all") %>% flextable::save_as_docx(path = paste0(tablesPath,"/","TABLE_4B.docx"),pr_section = sect_properties)
+
+```
+
+
+# Session
+
+```{r,warning=F, message=F,eval=TRUE,fig.show = 'hold', fig.width=14, fig.height=8}
+session_info <- sessionInfo()
+writeLines(capture.output(session_info), paste0(sessionInfoPath,"prognostic_prediction_model_visualizations_tables.txt"))
+
+sessionInfo()
+```

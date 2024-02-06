@@ -1,0 +1,303 @@
+---
+title: "Sustained improved survival of patients with metastatic melanoma after the introduction of anti-PD-1-based therapies"
+subtitle: <center> Data Load & processing of patient information</center>
+author: "Aimilia Schina"
+date: '`r paste("First created on May 2022. Updated on ", format(Sys.Date(), "%d %B %Y"))`'
+output:
+  html_document:
+    css: style.css
+    code_folding: hide
+    #smooth_scroll: yes
+    fig_caption: yes
+    #highlight: textmate
+    #theme: cerulean
+    #theme: simplex
+    toc: yes
+    toc_float:
+      collapsed: true
+      smooth_scroll: true
+    toc_depth: 5
+    number_sections: true
+    #df_print: paged
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = 'D:/BIOINF/PROJECTS/2_ANALYSES/18_GIT_PAPERS/RealMelanoma_antiPD1_based')
+```
+
+
+```{r,warning=F, message=F}
+RNGkind(sample.kind = "Rounding")
+## Clear R-workspace
+rm(list=ls(all=TRUE))
+
+## Close all graphic devices
+graphics.off()
+#####################
+### Load packages ###
+#####################
+library(pacman)
+pacman::p_load(extrafont,dplyr, gtsummary, tidyr,data.table, readxl, stringr, tibble, xlsx)
+other_pckgs <- c("lubridate")
+require(other_pckgs)
+
+extrafont::loadfonts(device="win")
+windowsFonts(sans="Palatino Linotype")
+loadfonts(device="win")
+loadfonts(device="postscript")
+
+```
+
+
+
+```{r,warning=F, message=F}
+###########################
+### Main analysis paths ###
+###########################
+
+scriptsPath <- paste0("scripts/")
+scriptsFunctionsPath <- paste0(scriptsPath,"functions/")
+projectDataPath <- paste0("data/")
+projectOutDataPath <- paste0("output/data_files/")
+figuresPath <- paste0("output/figures/")
+tablesPath <- paste0("output/tables/")
+sessionInfoPath <- paste0("session_info/")
+
+
+##################################
+### LOAD SOURCE FUNCTIONS FILE ###
+##################################
+source(paste0(scriptsFunctionsPath,"data_preprocessing_functions.R"))
+
+
+#####################
+### File suffixes ###
+#####################
+Rdata.suffix <- ".RData"
+
+
+```
+
+# Data {.tabset .tabset-fade .tabset-pills}
+
+## Loading patient data
+
+```{r dataLoad,warning=F, message=F,eval=TRUE}
+# Loading CSV file with patient info
+
+dataDF.1 <- read_excel(paste0(projectDataPath, "master_12_14_16.xlsx"))
+# Remove first empty column
+dataDF.1 <- dataDF.1[,-1]
+# Select until row 840
+dataDF.1 <- dataDF.1[1:839,]
+# Correct First column name
+colnames(dataDF.1)[1] <- "orig_pt_nt"
+colnames(dataDF.1)[2] <- "pt_nt"
+colnames(dataDF.1)[c(47,87)] <- c("Comorbidities2", "Comorbidities")
+colnames(dataDF.1)[c(55,88)] <- c("Autoimmune2", "Autoimmune")
+
+# Second file for 2018
+dataDF.2 <- read_excel(paste0(projectDataPath, "master_18.xlsx"))
+
+# Correct First column name
+colnames(dataDF.2)[1] <- "cprnr_hash_md5"
+# Add year of diagnosis
+dataDF.2 <- dataDF.2 %>% add_column(`Year of diagnosis` = rep(2018,nrow(dataDF.2)), .after=1)
+# Here I need correct calculation of age based on date of first visit, since it is rounded for some reason
+require(lubridate)
+dataDF.2$bday <- str_replace_all(dataDF.2$bday," UTC","")
+dataDF.2$`Date-of-first-visit` <- str_replace_all(dataDF.2$`Date-of-first-visit`," UTC","")
+dataDF.2$age2 <- get_age(dataDF.2$bday,dataDF.2$`Date-of-first-visit`,dec=TRUE,decPoints = 1)
+colnames(dataDF.2)[c(10,172)] <- c("age_rounded","age")
+# who--(THIS IS PERFORMANCE STATUS)
+# Selected columns for merging both
+selColumns <- c("patient_id","Year of diagnosis","gender","age","melanoma_diagnosis","braf","linje1","brainmets","STAGE","ldh_format",
+                "who", "Months_to_death_or_last_seen", "Dead_or_alive","PS", "BRAIN", "Steroids", "Comorbidities",
+                "Autoimmune", "Other_Malignancies")
+
+# # Check naming of columns to select from both master files
+# setdiff(selColumns,colnames(dataDF.2))
+
+# setdiff(selColumns,colnames(dataDF.1))
+# [1] "age"                          "braf"                         "brainmets"                    "ldh_format"                  
+# [5] "Months_to_death_or_last_seen" "Dead_or_alive"                "Other_Malignancies" 
+## Need to change column names here:
+# Age column
+colnames(dataDF.1)[21] <- "age"
+colnames(dataDF.1)[8] <- "braf"
+colnames(dataDF.1)[34] <-"brainmets"
+colnames(dataDF.1)[27] <- "ldh_format" # also transform to NUMERIC
+colnames(dataDF.1)[18] <- "Months_to_death_or_last_seen"
+colnames(dataDF.1)[19] <- "Dead_or_alive" # change to NUMERIC
+colnames(dataDF.1)[89] <- "Other_Malignancies"
+
+# Transform columns needed in dataDF.1
+dataDF.1$ldh_format <- as.numeric(dataDF.1$ldh_format)
+dataDF.1$who <- as.numeric(dataDF.1$who)
+dataDF.1$Dead_or_alive <- as.numeric(dataDF.1$Dead_or_alive)
+
+
+
+dataDF.1.sub <- dataDF.1 %>% dplyr::select(all_of(selColumns)) %>% droplevels()
+dataDF.2.sub <- dataDF.2 %>% dplyr::select(all_of(selColumns)) %>% droplevels()
+
+
+data.DF <- rbind(dataDF.1.sub,dataDF.2.sub)
+
+# Remove rows which are all empty
+data.DF <-data.DF[!apply(is.na(data.DF), 1, all), ] 
+
+
+```
+
+### Fixing first line treatment labels
+
+Looking at first line treatment categories, merging, looking at specific patients
+
+* BMS 047: all patients got a combination of nivolumab + relatlimab
+* Nivolumab PD-L1/IDO: all patients got a combination of nivolumab + vaccine anti PD-L1/IDO
+
+We take all patients who got a non-standard treatment, such as the combinations above or 
+
+1. BMS 047
+2. Nivo/IDO
+3. KN 022 Dabra/Tram + Pembro (which means that this subject actually got a combo of dabrafenib+trametinib+pembrolizumab, this is NOT an approved treatment)  as “experimental”
+
+BMS 511 and BMS 511 Ipi(3)/Nivo(1) vs Ipi(1)/Nivo(3) were assigned to antiPD1+antiCTLA4.
+
+
+Specific details on assigning treatment:
+
+* Nivolumab PD-L1/IDO --> anti-PD-1: assign to anti-PD-1, even though technically it is experimental 
+* BMS 047 Nivolumab/LAG3: Experimental 
+* KN 022 Dabra/Tram +/- Pembro:  KN022 to Dabra/Tram. The others are Experimental
+* BMS 067 :  It's one patient
+* Membrains I:  It's two patients
+* Membrains II:  It's one patient: M0172490638
+* BMS 047: all patients got a combination of nivolumab + relatlimab
+* Nivolumab PD-L1/IDO: all patients got a combination of nivolumab + vaccine anti PD-L1/IDO
+
+All patients who got a non-standard treatment, such as the combinations above or the KN 022 Dabra/Tram + Pembro (which means that this subject actually got a combo of dabrafenib+trametinib+pembrolizumab, this is NOT an approved treatment)  as “experimental”.
+
+
+```{r ,warning=F, message=F,eval=TRUE}
+#issue with anti-PD-1 experimental treats, no treatment
+
+dataDF.new <- data.DF
+dataDF.new <- dataDF.new %>% add_column(linje1_v2=dataDF.new$linje1,.after="linje1")
+
+dataDF.new$linje1_v2[which(dataDF.new$patient_id %in% c("0211237720","0211224920","0111248220","0111245620"))] <-  "Dabrafenib/Trametinib"            
+dataDF.new$linje1_v2[which(dataDF.new$patient_id %in% c("M0172514337", "M0172453837"))] <-  "Pembrolizumab"
+dataDF.new$linje1_v2[which(dataDF.new$patient_id %in% c("111108120"))] <-  "Nivolumab"
+dataDF.new$linje1_v2[which(dataDF.new$patient_id %in% c("0111244220","0211234420","0211261220"))] <-  "KN 022 Dabra/Tram +/- Pembro"                   
+dataDF.new$linje1_v2[which(dataDF.new$patient_id %in% c("0211232920"))] <-  ""                      
+dataDF.new$linje1_v2[which(dataDF.new$patient_id %in% c("M0172490638"))] <-  "Ipilimumab Nivolumab"
+dataDF.new$linje1_v2[which(dataDF.new$patient_id %in% c("111108120"))] <-  "Ipilimumab Nivolumab"# BMS 067
+
+
+dataDF.new$firstLine <- ifelse(dataDF.new$linje1_v2 %in% c("Pembrolizumab","KN 252 Pembro +/- Epacadostat", "Nivolumab PD-L1/IDO","Nivolumab"), "Anti-PD-1",
+            ifelse(dataDF.new$linje1_v2 %in% c("IFN/IL2"), "IFN/IL2",
+            ifelse(dataDF.new$linje1_v2 %in% c("Ipilimumab","Ipilimumab (3vs10)","Ipilimumab-IDO"), "Anti-CTLA-4",
+            ifelse(dataDF.new$linje1_v2 %in% c("Dabrafenib/Trametinib","Vemurafenib/Cobimetinib", "BRAF/MEK inhib","COMBI-V"), "BRAFi",
+            ifelse(dataDF.new$linje1_v2 %in% c("Ipilimumab Nivolumab","BMS 511","BMS 511 Ipi(3)/Nivo(1) vs Ipi(1)/Nivo(3)"), "Anti-PD-1 plus Anti-CTLA-4",
+            ifelse(dataDF.new$linje1_v2 %in% c("Temozolomid"), "Temozolomid",
+            ifelse(dataDF.new$linje1_v2 %in% c("IL-2 intralesional"), "IL2 intralesional",
+            ifelse(dataDF.new$linje1_v2 %in% c("","NULL", NA), "No treatment","Experimental Treatments"))))))))
+
+
+
+table(dataDF.new$`Year of diagnosis`)
+table(dataDF.new$`Year of diagnosis`, dataDF.new$firstLine)
+table(dataDF.new$firstLine)
+dim(dataDF.new)
+```
+
+### Fixing missing ages
+
+Fix missing ages for 4 patients, based on new information, providing the date of birth of those patients, and the calculation happens as : the 4/5 from 2012, we calculate their age at 1/7-2012 and same for 2016 (at 1/7-2016).
+
+For the following patients, calculate age at first treatment, based on their date of birth as given bellow
+
+* 211235620: 080848 (1st visit: 11/09/2012)
+* 111295720: 180356 (1st visit: 24/03/2012)
+* 211210620: 240337 (1st visit: 08/10/2012)
+* 111253620: 110143 (1st visit: 16/08/2016)
+
+```{r ,warning=F, message=F,eval=TRUE}
+# There are values that are zero in age, turn that to missing
+dataDF.new$age <- ifelse(dataDF.new$age==0,NA,dataDF.new$age)
+dataDF.new[which(is.na(dataDF.new$age)),]
+
+x_date_2012   <- as.Date("2012-09-11")
+dataDF.new[which(dataDF.new$patient_id=="0211235620"),]
+birth_date <- as.Date("1948-08-08")
+dataDF.new$age[which(dataDF.new$patient_id=="0211235620")]<- get_age(birth_date,x_date_2012,dec=TRUE,decPoints = 1)
+
+# 111295720: 180356
+x_date_2012   <- as.Date("2012-03-24")
+dataDF.new[which(dataDF.new$patient_id=="0111295720"),]
+birth_date <- as.Date("1956-03-18")
+dataDF.new$age[which(dataDF.new$patient_id=="0111295720")]<- get_age(birth_date,x_date_2012,dec=TRUE,decPoints = 1)
+
+# 211210620: 240337
+x_date_2012   <- as.Date("2012-10-08")
+dataDF.new[which(dataDF.new$patient_id=="0211210620"),]
+birth_date <- as.Date("1937-03-24")
+dataDF.new$age[which(dataDF.new$patient_id=="0211210620")]<- get_age(birth_date,x_date_2012,dec=TRUE,decPoints = 1)
+
+# 111253620: 110143
+x_date_2016   <- as.Date("2016-08-16")
+dataDF.new[which(dataDF.new$patient_id=="0111253620"),]
+birth_date <- as.Date("1943-01-11")
+dataDF.new$age[which(dataDF.new$patient_id=="0111253620")]<- get_age(birth_date,x_date_2016,dec=TRUE,decPoints = 1)
+
+```
+
+
+```{r,warning=F, message=F,eval=FALSE}
+
+datatable(dataDF.new, extensions = 'Buttons', options = list(
+    dom = 'Bfrtip',
+    buttons = c('copy', 'excel', 'csv' ),
+    scrollX=TRUE,
+    pageLength=15
+  ),
+  caption = 'Patients with other treatments'
+)
+```
+
+```{r,warning=F, message=F,eval=FALSE}
+
+datatable(dataDF.new %>% dplyr::filter(firstLine=="Experimental Treatments") %>% droplevels(), extensions = 'Buttons', options = list(
+    dom = 'Bfrtip',
+    buttons = c('copy', 'excel', 'csv' ),
+    scrollX=TRUE,
+    pageLength=15
+  ),
+  caption = 'Patients with other treatments'
+)
+```
+
+### Remove patient
+
+Remove patient 0211237520 that was previously classified as 2016 but was from 2021. It has been removed from master.
+
+## Save merged document for 2012,2014,2016,2018
+
+```{r ,warning=F, message=F,eval=TRUE}
+
+write.xlsx2(dataDF.new %>% as.data.frame(), paste0(projectDataPath, "MERGED_27022023.xlsx"), sheetName = "Sheet1", 
+  col.names = TRUE, row.names = FALSE, append = FALSE)
+```
+
+
+# Session info
+
+```{r,warning=F, message=F,eval=TRUE}
+session_info <- sessionInfo()
+writeLines(capture.output(session_info), paste0(sessionInfoPath,"patient_data_preprocessing.txt"))
+
+sessionInfo()
+
+```
